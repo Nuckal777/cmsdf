@@ -17,6 +17,8 @@
 #define ERR_FACE_NO_OUTLINE -1338
 #define ERR_OOM -1339
 #define ERR_FILE_IO -1340
+#define ERR_INVALID_ARGS -1341
+#define ERR_INVALID_BMP -1342
 
 typedef struct {
     double x;
@@ -510,6 +512,13 @@ int decompose_cubic_to(const FT_Vector* control1, const FT_Vector* control2, con
 }
 
 typedef struct {
+    const char* fontpath;
+    FT_ULong character;
+    FT_UInt pixel_width;
+    FT_UInt pixel_height;
+} decompose_params;
+
+typedef struct {
     edge_array edges;
     contour_index contour_idx;
 } decompose_result;
@@ -521,17 +530,17 @@ typedef struct {
     ssize_t offY;
 } raster_rec;
 
-int decompose(FT_Library ft_library, const char* fontpath, decompose_result* result, raster_rec* rec) {
+int decompose(FT_Library ft_library, decompose_params params, decompose_result* result, raster_rec* rec) {
     FT_Face face;
-    FT_Error err = FT_New_Face(ft_library, fontpath, 0, &face);
+    FT_Error err = FT_New_Face(ft_library, params.fontpath, 0, &face);
     if (err) {
         return err;
     }
-    err = FT_Set_Pixel_Sizes(face, 16, 0);
+    err = FT_Set_Pixel_Sizes(face, params.pixel_width, params.pixel_height);
     if (err) {
         goto cleanup;
     }
-    FT_UInt idx = FT_Get_Char_Index(face, 'A');
+    FT_UInt idx = FT_Get_Char_Index(face, params.character);
     if (!idx) {
         err = ERR_FACE_MISSING_GLYPH;
         goto cleanup;
@@ -688,9 +697,9 @@ uint32_t sample_bilinear(vec2 at, uint32_t* image, size_t width, size_t height, 
     high_x = high_x >= width ? width - 1 : high_x;
     high_y = high_y >= height ? height - 1 : high_y;
 
-    double part00 = extract_shifted(image[x + y * width], shift) * (1 - frac_x) * (1-frac_y);
+    double part00 = extract_shifted(image[x + y * width], shift) * (1 - frac_x) * (1 - frac_y);
     double part01 = extract_shifted(image[x + high_y * width], shift) * (1 - frac_x) * frac_y;
-    double part10 = extract_shifted(image[high_x + y * width], shift) * frac_x * (1-frac_y);
+    double part10 = extract_shifted(image[high_x + y * width], shift) * frac_x * (1 - frac_y);
     double part11 = extract_shifted(image[high_x + high_y * width], shift) * frac_x * frac_y;
     return part00 + part01 + part10 + part11;
 }
@@ -729,11 +738,11 @@ int render(render_params params, uint32_t** out, size_t* out_size) {
             double red = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 16);
             double median = median3(blue, green, red);
             if (median > 127.5) {
-               pixels[x + y * params.render_width] = 0; 
+                pixels[x + y * params.render_width] = 0;
             } else {
                 pixels[x + y * params.render_width] = 255;
             }
-        }   
+        }
     }
     *out = pixels;
     return 0;
@@ -776,6 +785,36 @@ size_t bmp_write(bmp_params params, uint8_t* buf) {
     return total_size;
 }
 
+int read_bmp(uint8_t* buf, size_t buf_size, bmp_params* out) {
+    uint32_t pixel_offset;
+    memcpy(&pixel_offset, buf + 10, sizeof(pixel_offset));
+    if (pixel_offset != BMP_HEADER_SIZE) {
+        return ERR_INVALID_BMP;
+    }
+    uint8_t* info_header = buf + 14;
+    uint32_t info_header_size;
+    memcpy(&info_header_size, info_header, sizeof(info_header_size));
+    if (info_header_size != 40) {
+        return ERR_INVALID_BMP;
+    }
+    memcpy(&out->width, info_header + 4, 4);
+    memcpy(&out->height, info_header + 8, 4);
+    if (buf_size < BMP_HEADER_SIZE + out->width * out->height) {
+        return ERR_INVALID_BMP;
+    }
+    uint16_t val;
+    memcpy(&val, info_header + 12, sizeof(val));
+    if (val != 1) {
+        return ERR_INVALID_BMP;
+    }
+    memcpy(&val, info_header + 14, sizeof(val));
+    if (val != 32) {
+        return ERR_INVALID_BMP;
+    }
+    out->data = (uint32_t*)(buf + BMP_HEADER_SIZE);
+    return 0;
+}
+
 int write_file(const char* filename, void* buf, size_t buf_size) {
     int err = 0;
     FILE* f = fopen(filename, "wb");
@@ -792,19 +831,54 @@ cleanup:
     return err;
 }
 
-int main() {
-    FT_Library ft_library;
-    FT_Error err = FT_Init_FreeType(&ft_library);
-    if (err) {
-        printf("failed to init freetype: %d\n", err);
-        return EXIT_FAILURE;
+int read_file(const char* filename, void** buf, size_t* buf_size) {
+    int err = 0;
+    FILE* f = fopen(filename, "rb");
+    if (!f) {
+        errno = 0;
+        return ERR_FILE_IO;
     }
+    err = fseek(f, 0, SEEK_END);
+    if (err) {
+        errno = 0;
+        err = ERR_FILE_IO;
+        goto cleanup;
+    }
+    long size = ftell(f);
+    if (size < 0) {
+        errno = 0;
+        err = ERR_FILE_IO;
+        goto cleanup;
+    }
+    rewind(f);
+    *buf = malloc(size);
+    if (!buf) {
+        err = ERR_OOM;
+        goto cleanup;
+    }
+    unsigned long read = fread(*buf, 1, size, f);
+    if (read != size) {
+        errno = 0;
+        err = ERR_FILE_IO;
+        goto cleanup_buf;
+    }
+    *buf_size = size;
+cleanup_buf:
+    if (err) {
+        free(buf);
+    }
+cleanup:
+    fclose(f);
+    return err;
+}
+
+int prog_generate(FT_Library ft_library, decompose_params params) {
     decompose_result result;
     raster_rec rec;
-    err = decompose(ft_library, "/usr/share/fonts/liberation/LiberationMono-Regular.ttf", &result, &rec);
+    int err = decompose(ft_library, params, &result, &rec);
     if (err) {
         printf("failed to decompose freetype: %d\n", err);
-        goto cleanup;
+        return err;
     }
     printf("width: %zu, height: %zu\n", rec.width, rec.height);
     printf("contours: %zu, edge count: %zu\n", result.contour_idx.len, result.edges.len);
@@ -813,54 +887,163 @@ int main() {
     err = raster_edges(result.edges, rec, &raster, &raster_size);
     if (err) {
         printf("failed to raster edges: %d\n", err);
+        goto cleanup_edges;
+    }
+    bmp_params raster_bmp_params = {.data = raster, .width = rec.width, .height = rec.height};
+    uint8_t* buf = malloc(bmp_write(raster_bmp_params, NULL));
+    if (!buf) {
+        err = ERR_OOM;
         goto cleanup_raster;
     }
-    bmp_params raster_bmp_params = { .data = raster, .width = rec.width, .height = rec.height };
-    uint8_t* buf = malloc(bmp_write(raster_bmp_params, NULL));
-    assert(buf);
     size_t bmp_size = bmp_write(raster_bmp_params, buf);
     err = write_file("out.bmp", buf, bmp_size);
     if (err) {
         printf("failed to write file: %d\n", err);
     }
     free(buf);
+cleanup_raster:
+    free(raster);
+cleanup_edges:
+    free(result.edges.data);
+    return err;
+}
 
+int prog_render(size_t render_width, size_t render_height) {
+    printf("w: %zu, h: %zu\n", render_width, render_height);
+    uint8_t* bmp_data;
+    size_t bmp_data_size;
+    int err = read_file("out.bmp", (void**)&bmp_data, &bmp_data_size);
+    if (err) {
+        printf("failed to read file: %d\n", err);
+        return err;
+    }
+    bmp_params raster_params;
+    err = read_bmp(bmp_data, bmp_data_size, &raster_params);
+    if (err) {
+        printf("failed to parse bmp: %d\n", err);
+        goto cleanup;
+    }
     uint32_t* rendered;
     size_t rendered_size;
-    size_t render_width = 64;
-    size_t render_height = 64;
     render_params render_params = {
-        .msdf = raster,
-        .msdf_height = rec.height,
-        .msdf_width = rec.width,
+        .msdf = raster_params.data,
+        .msdf_height = raster_params.height,
+        .msdf_width = raster_params.width,
         .render_width = render_width,
         .render_height = render_height,
     };
     err = render(render_params, &rendered, &rendered_size);
     if (err) {
         printf("failed to render: %d\n", err);
-        goto cleanup_raster;
+        goto cleanup;
     }
-    printf("rendered 0: %d", rendered[0]);
 
-    bmp_params render_bmp_params = {.data = rendered, .width = render_width, .height = render_height };
-    buf = malloc(bmp_write(render_bmp_params, NULL));
-    assert(buf);
-    bmp_size = bmp_write(render_bmp_params, buf);
+    bmp_params render_bmp_params = {.data = rendered, .width = render_width, .height = render_height};
+    uint8_t* buf = malloc(bmp_write(render_bmp_params, NULL));
+    if (!buf) {
+        err = ERR_OOM;
+        goto cleanup_rendered;
+    }
+    size_t bmp_size = bmp_write(render_bmp_params, buf);
     err = write_file("render.bmp", buf, bmp_size);
     if (err) {
         printf("failed to write file: %d\n", err);
     }
     free(buf);
-
+cleanup_rendered:
     free(rendered);
-cleanup_raster:
-    free(raster);
-cleanup_edges:
-    free(result.edges.data);
 cleanup:
-    if (FT_Done_FreeType(ft_library)) {
-        printf("failed to deinit freetype: %d\n", err);
+    free(bmp_data);
+    return err;
+}
+
+typedef struct {
+    const char* mode;
+    const char* font;
+    long width;
+    long height;
+    unsigned long character;
+} prog_args;
+
+int parse_args(int argc, char* argv[], prog_args* args) {
+    args->mode = NULL;
+    args->width = 32;
+    args->height = 32;
+    args->character = 'A';
+    args->font = "/usr/share/fonts/liberation/LiberationMono-Regular.ttf";
+    if (argc < 2) {
+        return ERR_INVALID_ARGS;
+    }
+    args->mode = argv[1];
+    for (int i = 2; i < argc; i++) {
+        const char* current = argv[i];
+        if (strcmp(current, "-w") == 0) {
+            if (i >= argc) {
+                return ERR_INVALID_ARGS;
+            }
+            args->width = strtol(argv[i + 1], NULL, 10);
+            if (errno == ERANGE) {
+                errno = 0;
+                return ERR_INVALID_ARGS;
+            }
+            i++;
+        } else if (strcmp(current, "-h") == 0) {
+            if (i >= argc) {
+                return ERR_INVALID_ARGS;
+            }
+            args->height = strtol(argv[i + 1], NULL, 10);
+            if (errno == ERANGE) {
+                errno = 0;
+                return ERR_INVALID_ARGS;
+            }
+            i++;
+        } else if (strcmp(current, "-c") == 0) {
+            if (i >= argc) {
+                return ERR_INVALID_ARGS;
+            }
+            args->character = argv[i + 1][0];
+            i++;
+        } else if (strcmp(current, "-f") == 0) {
+            if (i >= argc) {
+                return ERR_INVALID_ARGS;
+            }
+            args->font = argv[i + 1];
+            i++;
+        } else {
+            return ERR_INVALID_ARGS;
+        }
+    }
+    return 0;
+}
+
+int main(int argc, char* argv[]) {
+    prog_args args;
+    int err = parse_args(argc, argv, &args);
+    if (err) {
+        fprintf(stderr, "usage: cmsdf [generate|render]\n");
+        return EXIT_FAILURE;
+    }
+    if (strcmp(args.mode, "generate") == 0) {
+        FT_Library ft_library;
+        if (FT_Init_FreeType(&ft_library)) {
+            printf("failed to init freetype: %d\n", err);
+            return EXIT_FAILURE;
+        }
+        decompose_params params = {
+            .fontpath = args.font,
+            .character = args.character,
+            .pixel_width = args.width,
+            .pixel_height = args.height,
+        };
+        err = prog_generate(ft_library, params);
+        if (FT_Done_FreeType(ft_library)) {
+            printf("failed to deinit freetype: %d\n", err);
+        }
+    } else if (strcmp(args.mode, "render") == 0) {
+        err = prog_render(args.width, args.height);
+    } else {
+        fprintf(stderr, "unknown mode\n");
+        err = ERR_INVALID_ARGS;
     }
     return err ? EXIT_FAILURE : EXIT_SUCCESS;
 }
