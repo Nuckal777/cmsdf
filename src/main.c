@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <math.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -545,7 +546,7 @@ int decompose(FT_Library ft_library, decompose_params params, decompose_result* 
         err = ERR_FACE_MISSING_GLYPH;
         goto cleanup;
     }
-    err = FT_Load_Glyph(face, idx, 0);
+    err = FT_Load_Glyph(face, idx, FT_LOAD_NO_HINTING);
     if (err) {
         goto cleanup;
     }
@@ -624,6 +625,8 @@ cleanup:
     return err;
 }
 
+#define RASTER_COLOR_SCALE 3.0
+
 int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_size) {
     *out_size = rec.width * rec.height * sizeof(uint32_t);
     uint32_t* pixels = malloc(*out_size);
@@ -660,10 +663,9 @@ int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_s
                 }
             }
             int inside = edge_array_inside(edges, origin);
-            const double scale = 3;
-            double val_blue = min_blue / max_dist * scale;
-            double val_green = min_green / max_dist * scale;
-            double val_red = min_red / max_dist * scale;
+            double val_blue = min_blue / max_dist * RASTER_COLOR_SCALE;
+            double val_green = min_green / max_dist * RASTER_COLOR_SCALE;
+            double val_red = min_red / max_dist * RASTER_COLOR_SCALE;
             if (!inside) {
                 val_blue *= -1;
                 val_green *= -1;
@@ -720,6 +722,7 @@ typedef struct {
     size_t msdf_height;
     size_t render_width;
     size_t render_height;
+    bool anti_aliasing;
 } render_params;
 
 int render(render_params params, uint32_t** out, size_t* out_size) {
@@ -732,15 +735,23 @@ int render(render_params params, uint32_t** out, size_t* out_size) {
     double y_mult = (double)params.msdf_height / params.render_height;
     for (size_t x = 0; x < params.render_width; x++) {
         for (size_t y = 0; y < params.render_height; y++) {
-            vec2 offset = {.x = x * x_mult, .y = y * y_mult};
+            vec2 offset = {.x = x * x_mult - 0.5, .y = y * y_mult - 0.5};
             double blue = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 0);
             double green = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 8);
             double red = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 16);
             double median = median3(blue, green, red);
-            if (median > 127.5) {
-                pixels[x + y * params.render_width] = 0;
+            if (params.anti_aliasing) {
+                double dist = median - 127.5;
+                double color = (dist + 1.0) * 127.5;
+                color = color < 0 ? 0 : color;
+                color = color > 255.0 ? 255.0 : color;
+                pixels[x + y * params.render_width] = 255 - color;
             } else {
-                pixels[x + y * params.render_width] = 255;
+                if (median > 127.5) {
+                    pixels[x + y * params.render_width] = 0;
+                } else {
+                    pixels[x + y * params.render_width] = 255;
+                }
             }
         }
     }
@@ -872,7 +883,7 @@ cleanup:
     return err;
 }
 
-int prog_generate(FT_Library ft_library, decompose_params params) {
+int prog_generate(FT_Library ft_library, decompose_params params, bool verbose) {
     decompose_result result;
     raster_rec rec;
     int err = decompose(ft_library, params, &result, &rec);
@@ -880,8 +891,14 @@ int prog_generate(FT_Library ft_library, decompose_params params) {
         printf("failed to decompose freetype: %d\n", err);
         return err;
     }
-    printf("width: %zu, height: %zu\n", rec.width, rec.height);
-    printf("contours: %zu, edge count: %zu\n", result.contour_idx.len, result.edges.len);
+    if (verbose) {
+        printf("width: %zu, height: %zu\n", rec.width, rec.height);
+        printf("contours: %zu, edge count: %zu\n", result.contour_idx.len, result.edges.len);
+        for (int i = 0; i < result.edges.len; i++) {
+            edge* current = result.edges.data + i;
+            printf("start: (%g, %g) end: (%g, %g)\n", current->start.x, current->start.y, current->end.x, current->end.y);
+        }
+    }
     size_t raster_size;
     uint32_t* raster;
     err = raster_edges(result.edges, rec, &raster, &raster_size);
@@ -931,6 +948,7 @@ int prog_render(size_t render_width, size_t render_height) {
         .msdf_width = raster_params.width,
         .render_width = render_width,
         .render_height = render_height,
+        .anti_aliasing = false,
     };
     err = render(render_params, &rendered, &rendered_size);
     if (err) {
@@ -963,6 +981,7 @@ typedef struct {
     long width;
     long height;
     unsigned long character;
+    bool verbose;
 } prog_args;
 
 int parse_args(int argc, char* argv[], prog_args* args) {
@@ -971,6 +990,7 @@ int parse_args(int argc, char* argv[], prog_args* args) {
     args->height = 32;
     args->character = 'A';
     args->font = "/usr/share/fonts/liberation/LiberationMono-Regular.ttf";
+    args->verbose = false;
     if (argc < 2) {
         return ERR_INVALID_ARGS;
     }
@@ -1009,6 +1029,8 @@ int parse_args(int argc, char* argv[], prog_args* args) {
             }
             args->font = argv[i + 1];
             i++;
+        } else if (strcmp(current, "-v") == 0) {
+            args->verbose = true;
         } else {
             return ERR_INVALID_ARGS;
         }
@@ -1035,7 +1057,7 @@ int main(int argc, char* argv[]) {
             .pixel_width = args.width,
             .pixel_height = args.height,
         };
-        err = prog_generate(ft_library, params);
+        err = prog_generate(ft_library, params, args.verbose);
         if (FT_Done_FreeType(ft_library)) {
             printf("failed to deinit freetype: %d\n", err);
         }
