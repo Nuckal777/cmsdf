@@ -56,19 +56,36 @@ double vec2_dist(vec2 a, vec2 b) {
 #define EDGE_TY_CONIC 2
 #define EDGE_TY_CUBIC 3
 
-#define EDGE_COLOR_CYAN 1
-#define EDGE_COLOR_YELLOW 2
-#define EDGE_COLOR_MAGENTA 3
+#define EDGE_COLOR_CYAN (255 | 255 << 8)
+#define EDGE_COLOR_MAGENTA (255 | 255 << 16)
+#define EDGE_COLOR_YELLOW (255 << 8 | 255 << 16)
+#define EDGE_COLOR_WHITE (255 | 255 << 8 | 255 << 16)
+
+uint32_t scale_color(uint32_t edge_color, double scale) {
+    uint32_t base = (uint32_t)((scale + 1) * 127.5);
+    switch (edge_color) {
+        case EDGE_COLOR_CYAN:
+            return base | base << 8;
+        case EDGE_COLOR_MAGENTA:
+            return base | base << 16;
+        case EDGE_COLOR_YELLOW:
+            return base << 8 | base << 16;
+        case EDGE_COLOR_WHITE:
+            return base | base << 8 | base << 16;
+    }
+    assert(0);
+    return 0;
+}
 
 typedef struct {
     vec2 start;
     vec2 end;
     vec2 control1;
     vec2 control2;
-    int color;
+    uint32_t color;
 } edge;
 
-int edge_type(edge* e) {
+uint8_t edge_type(edge* e) {
     if (!isnan(e->control2.x)) {
         return EDGE_TY_CUBIC;
     }
@@ -109,7 +126,7 @@ edge make_cubic(vec2 start, vec2 end, vec2 control1, vec2 control2) {
 }
 
 vec2 edge_at(edge* e, double t) {
-    int ty = edge_type(e);
+    uint8_t ty = edge_type(e);
     switch (ty) {
         case EDGE_TY_LINE:
             return vec2_add(e->start, vec2_mult(vec2_sub(e->end, e->start), splat2(t)));
@@ -135,7 +152,7 @@ vec2 edge_at(edge* e, double t) {
 }
 
 vec2 edge_dir(edge* e, double t) {
-    int ty = edge_type(e);
+    uint8_t ty = edge_type(e);
     switch (ty) {
         case EDGE_TY_LINE:
             return vec2_sub(e->end, e->start);
@@ -213,7 +230,7 @@ double min_dist_sq(edge* e, double t, vec2 point) {
 }
 
 double edge_arg_min_dist(edge* e, vec2 point) {
-    int ty = edge_type(e);
+    uint8_t ty = edge_type(e);
     switch (ty) {
         case EDGE_TY_LINE: {
             vec2 dir = vec2_sub(e->end, e->start);
@@ -305,7 +322,7 @@ double edge_dist(edge* e, vec2 point) {
 }
 
 size_t edge_intersect_ray(edge* e, vec2 origin, vec2 dir, double* out) {
-    int ty = edge_type(e);
+    uint8_t ty = edge_type(e);
     switch (ty) {
         case EDGE_TY_LINE: {
             vec2 edge_dir = vec2_sub(e->end, e->start);
@@ -510,11 +527,11 @@ int decompose(FT_Library ft_library, const char* fontpath, decompose_result* res
     if (err) {
         return err;
     }
-    err = FT_Set_Pixel_Sizes(face, 64, 0);
+    err = FT_Set_Pixel_Sizes(face, 16, 0);
     if (err) {
         goto cleanup;
     }
-    FT_UInt idx = FT_Get_Char_Index(face, '&');
+    FT_UInt idx = FT_Get_Char_Index(face, 'A');
     if (!idx) {
         err = ERR_FACE_MISSING_GLYPH;
         goto cleanup;
@@ -564,6 +581,31 @@ int decompose(FT_Library ft_library, const char* fontpath, decompose_result* res
         .offX = cbox.xMin,
         .offY = cbox.yMin,
     };
+
+    for (int i = 0; i < result->contour_idx.len; i++) {
+        edge* start = result->edges.data + result->contour_idx.offsets[i];
+        edge* end = NULL;
+        if (i + 1 == result->contour_idx.len) {
+            end = result->edges.data + result->edges.len;
+        } else {
+            end = result->edges.data + result->contour_idx.offsets[i + 1];
+        }
+        if (end - start == 1) {
+            start->color = EDGE_COLOR_WHITE;
+            continue;
+        }
+        uint32_t color = EDGE_COLOR_MAGENTA;
+        const uint32_t check = EDGE_COLOR_YELLOW;
+        for (edge* current = start; current != end; current++) {
+            current->color = color;
+            if (color == check) {
+                color = EDGE_COLOR_CYAN;
+            } else {
+                color = check;
+            }
+        }
+    }
+
 cleanup_edges:
     if (err) {
         free(ctx.edges.data);
@@ -582,26 +624,116 @@ int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_s
     double max_dist = sqrt(rec.width * rec.width + rec.height * rec.height);
     for (ssize_t y = 0; y < rec.height; y++) {
         for (ssize_t x = 0; x < rec.width; x++) {
-            double min_dist = max_dist;
+            double min_blue = max_dist;
+            double min_green = max_dist;
+            double min_red = max_dist;
+            edge* edge_blue;
+            edge* edge_green;
+            edge* edge_red;
             // at y + 0.5 it is quite likely to pass through a vertex, which confuses the ray
             // casting algorithm, so a small offset is added here, which should make a collision
             // sufficiently unlikely.
             vec2 origin = (vec2){.x = (x + rec.offX) + 0.5, .y = (y + rec.offY) + 0.5 + 1e-9};
             for (size_t i = 0; i < edges.len; i++) {
-                double dist = edge_dist(edges.data + i, origin);
-                if (dist < min_dist) {
-                    min_dist = dist;
+                edge* current = edges.data + i;
+                double dist = edge_dist(current, origin);
+                if ((current->color & 255) != 0 && dist < min_blue) {
+                    min_blue = dist;
+                    edge_blue = current;
+                }
+                if ((current->color & 255 << 8) != 0 && dist < min_green) {
+                    min_green = dist;
+                    edge_green = current;
+                }
+                if ((current->color & 255 << 16) != 0 && dist < min_red) {
+                    min_red = dist;
+                    edge_red = current;
                 }
             }
             int inside = edge_array_inside(edges, origin);
-            double val = min_dist / max_dist * 3;
+            const double scale = 3;
+            double val_blue = min_blue / max_dist * scale;
+            double val_green = min_green / max_dist * scale;
+            double val_red = min_red / max_dist * scale;
             if (!inside) {
-                val *= -1;
+                val_blue *= -1;
+                val_green *= -1;
+                val_red *= -1;
             }
-            uint32_t color = (uint32_t)((val + 1) * 127.5);
+            uint32_t blue = (uint32_t)((val_blue + 1) * 127.5);
+            uint32_t green = (uint32_t)((val_green + 1) * 127.5);
+            uint32_t red = (uint32_t)((val_red + 1) * 127.5);
             size_t idx = x + y * rec.width;
-            pixels[idx] = color | color << 8 | color << 16;
+            pixels[idx] = blue | green << 8 | red << 16;
         }
+    }
+    *out = pixels;
+    return 0;
+}
+
+uint32_t extract_shifted(uint32_t val, uint32_t shift) {
+    return (val & 255 << shift) >> shift;
+}
+
+uint32_t sample_bilinear(vec2 at, uint32_t* image, size_t width, size_t height, uint32_t shift) {
+    double frac_x, int_x;
+    frac_x = modf(at.x, &int_x);
+    double frac_y, int_y;
+    frac_y = modf(at.y, &int_y);
+    uint32_t x = (uint32_t)int_x;
+    uint32_t y = (uint32_t)int_y;
+
+    uint32_t high_x = int_x + 1;
+    uint32_t high_y = int_y + 1;
+    high_x = high_x >= width ? width - 1 : high_x;
+    high_y = high_y >= height ? height - 1 : high_y;
+
+    double part00 = extract_shifted(image[x + y * width], shift) * (1 - frac_x) * (1-frac_y);
+    double part01 = extract_shifted(image[x + high_y * width], shift) * (1 - frac_x) * frac_y;
+    double part10 = extract_shifted(image[high_x + y * width], shift) * frac_x * (1-frac_y);
+    double part11 = extract_shifted(image[high_x + high_y * width], shift) * frac_x * frac_y;
+    return part00 + part01 + part10 + part11;
+}
+
+double median3(double a, double b, double c) {
+    if (a > b) {
+        if (b > c) return b;
+        return (a > c) ? c : a;
+    } else {
+        if (a > c) return a;
+        return (b > c) ? c : b;
+    }
+}
+
+typedef struct {
+    uint32_t* msdf;
+    size_t msdf_width;
+    size_t msdf_height;
+    size_t render_width;
+    size_t render_height;
+} render_params;
+
+int render(render_params params, uint32_t** out, size_t* out_size) {
+    *out_size = params.render_width * params.render_height * sizeof(uint32_t);
+    uint32_t* pixels = malloc(*out_size);
+    if (!pixels) {
+        return ERR_OOM;
+    }
+    double x_mult = (double)params.msdf_width / params.render_width;
+    double y_mult = (double)params.msdf_height / params.render_height;
+    for (size_t x = 0; x < params.render_width; x++) {
+        for (size_t y = 0; y < params.render_height; y++) {
+            vec2 offset = {.x = x * x_mult, .y = y * y_mult};
+            double blue = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 0);
+            double green = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 8);
+            double red = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 16);
+            double median = median3(blue, green, red);
+            if (median > 127.5) {
+               pixels[x + y * params.render_width] = 0; 
+            } else {
+                pixels[x + y * params.render_width] = 255;
+            }
+        }   
     }
     *out = pixels;
     return 0;
@@ -609,26 +741,39 @@ int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_s
 
 #define BMP_HEADER_SIZE 54
 
-size_t bmp_file_header(uint8_t* data, uint32_t size, uint32_t pixel_offset) {
-    data[0] = 0x42;
-    data[1] = 0x4D;
-    memcpy(data + 2, &size, 4);
-    memset(data + 6, 0, 4);
-    memcpy(data + 10, &pixel_offset, 4);
-    return 14;
-}
+typedef struct {
+    uint32_t* data;
+    int32_t width;
+    int32_t height;
+} bmp_params;
 
-size_t bmp_bitmap_info_header(uint8_t* data, int32_t width, int32_t height) {
-    data[0] = 40;
-    memset(data + 1, 0, 3);
-    memcpy(data + 4, &width, 4);
-    memcpy(data + 8, &height, 4);
-    data[12] = 1;
-    data[13] = 0;
-    data[14] = 32;
-    data[15] = 0;
-    memset(data + 16, 0, 24);
-    return 40;
+size_t bmp_write(bmp_params params, uint8_t* buf) {
+    uint32_t data_size = params.width * params.height * sizeof(uint32_t);
+    uint32_t total_size = BMP_HEADER_SIZE + data_size;
+    if (buf == NULL) {
+        return total_size;
+    }
+    // file header
+    buf[0] = 0x42;
+    buf[1] = 0x4D;
+    memcpy(buf + 2, &total_size, 4);
+    memset(buf + 6, 0, 4);
+    uint32_t pixel_offset = BMP_HEADER_SIZE;
+    memcpy(buf + 10, &pixel_offset, 4);
+    // info header
+    uint8_t* info_header = buf + 14;
+    info_header[0] = 40;
+    memset(info_header + 1, 0, 3);
+    memcpy(info_header + 4, &params.width, 4);
+    memcpy(info_header + 8, &params.height, 4);
+    info_header[12] = 1;
+    info_header[13] = 0;
+    info_header[14] = 32;
+    info_header[15] = 0;
+    memset(info_header + 16, 0, 24);
+    // data
+    memcpy(buf + BMP_HEADER_SIZE, params.data, data_size);
+    return total_size;
 }
 
 int write_file(const char* filename, void* buf, size_t buf_size) {
@@ -656,7 +801,7 @@ int main() {
     }
     decompose_result result;
     raster_rec rec;
-    err = decompose(ft_library, "/usr/share/fonts/adobe-source-code-pro/SourceCodePro-Regular.otf", &result, &rec);
+    err = decompose(ft_library, "/usr/share/fonts/liberation/LiberationMono-Regular.ttf", &result, &rec);
     if (err) {
         printf("failed to decompose freetype: %d\n", err);
         goto cleanup;
@@ -670,15 +815,45 @@ int main() {
         printf("failed to raster edges: %d\n", err);
         goto cleanup_raster;
     }
-    uint8_t* buf = malloc(raster_size + BMP_HEADER_SIZE);
-    size_t file_header_size = bmp_file_header(buf, raster_size + BMP_HEADER_SIZE, BMP_HEADER_SIZE);
-    size_t bitmap_info_size = bmp_bitmap_info_header(buf + file_header_size, rec.width, rec.height);
-    memcpy(buf + BMP_HEADER_SIZE, raster, raster_size);
-    err = write_file("out.bmp", buf, raster_size + BMP_HEADER_SIZE);
+    bmp_params raster_bmp_params = { .data = raster, .width = rec.width, .height = rec.height };
+    uint8_t* buf = malloc(bmp_write(raster_bmp_params, NULL));
+    assert(buf);
+    size_t bmp_size = bmp_write(raster_bmp_params, buf);
+    err = write_file("out.bmp", buf, bmp_size);
     if (err) {
         printf("failed to write file: %d\n", err);
     }
     free(buf);
+
+    uint32_t* rendered;
+    size_t rendered_size;
+    size_t render_width = 64;
+    size_t render_height = 64;
+    render_params render_params = {
+        .msdf = raster,
+        .msdf_height = rec.height,
+        .msdf_width = rec.width,
+        .render_width = render_width,
+        .render_height = render_height,
+    };
+    err = render(render_params, &rendered, &rendered_size);
+    if (err) {
+        printf("failed to render: %d\n", err);
+        goto cleanup_raster;
+    }
+    printf("rendered 0: %d", rendered[0]);
+
+    bmp_params render_bmp_params = {.data = rendered, .width = render_width, .height = render_height };
+    buf = malloc(bmp_write(render_bmp_params, NULL));
+    assert(buf);
+    bmp_size = bmp_write(render_bmp_params, buf);
+    err = write_file("render.bmp", buf, bmp_size);
+    if (err) {
+        printf("failed to write file: %d\n", err);
+    }
+    free(buf);
+
+    free(rendered);
 cleanup_raster:
     free(raster);
 cleanup_edges:
