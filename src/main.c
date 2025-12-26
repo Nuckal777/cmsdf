@@ -471,13 +471,13 @@ void edge_array_fit_to_grid(edge_array edges, vec2 dim) {
         vec2_min_max(edges.data[i].end, &min, &max);
     }
     vec2 len = vec2_sub(max, min);
-    vec2 scale = {.x = dim.x / len.x, .y = dim.y / len.y};
+    vec2 scale = {.x = (dim.x - 2) / len.x, .y = (dim.y - 2) / len.y};
     for (int i = 0; i < edges.len; i++) {
         edge* e = edges.data + i;
-        e->start = vec2_mult(vec2_sub(e->start, min), scale);
-        e->end = vec2_mult(vec2_sub(e->end, min), scale);
-        e->control1 = vec2_mult(vec2_sub(e->control1, min), scale);
-        e->control2 = vec2_mult(vec2_sub(e->control2, min), scale);
+        e->start = vec2_add(vec2_mult(vec2_sub(e->start, min), scale), splat2(1));
+        e->end = vec2_add(vec2_mult(vec2_sub(e->end, min), scale), splat2(1));
+        e->control1 = vec2_add(vec2_mult(vec2_sub(e->control1, min), scale), splat2(1));
+        e->control2 = vec2_add(vec2_mult(vec2_sub(e->control2, min), scale), splat2(1));
     }
 }
 
