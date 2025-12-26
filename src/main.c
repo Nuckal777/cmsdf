@@ -69,22 +69,6 @@ vec2 vec2_normalize(vec2 a) {
 #define EDGE_COLOR_YELLOW (255 << 8 | 255 << 16)
 #define EDGE_COLOR_WHITE (255 | 255 << 8 | 255 << 16)
 
-uint32_t scale_color(uint32_t edge_color, double scale) {
-    uint32_t base = (uint32_t)((scale + 1) * 127.5);
-    switch (edge_color) {
-        case EDGE_COLOR_CYAN:
-            return base | base << 8;
-        case EDGE_COLOR_MAGENTA:
-            return base | base << 16;
-        case EDGE_COLOR_YELLOW:
-            return base << 8 | base << 16;
-        case EDGE_COLOR_WHITE:
-            return base | base << 8 | base << 16;
-    }
-    assert(0);
-    return 0;
-}
-
 typedef struct {
     vec2 start;
     vec2 end;
@@ -323,12 +307,6 @@ double edge_arg_min_dist(edge* e, vec2 point) {
     return NAN;
 }
 
-double edge_dist(edge* e, vec2 point) {
-    double arg_min = edge_arg_min_dist(e, point);
-    vec2 at = edge_at(e, arg_min);
-    return vec2_dist(at, point);
-}
-
 size_t edge_intersect_ray(edge* e, vec2 origin, vec2 dir, double* out) {
     uint8_t ty = edge_type(e);
     switch (ty) {
@@ -401,28 +379,6 @@ size_t edge_intersect_ray(edge* e, vec2 origin, vec2 dir, double* out) {
     }
     assert(0);
     return 0;
-}
-
-double edge_sgn_dist(edge* e, vec2 origin) {
-    double arg_min = edge_arg_min_dist(e, origin);
-    vec2 at = edge_at(e, arg_min);
-    vec2 dir = edge_dir(e, arg_min);
-    double dist = vec2_dist(at, origin);
-    double cross = vec2_cross(dir, vec2_sub(at, origin));
-    if (cross > 0) {
-        return dist;
-    }
-    if (cross < 0) {
-        return -dist;
-    }
-    // fully parallel to an edge
-    // assuming a line min_arg between 0 and 1
-    // means origin is on the line => inside
-    // else outside
-    if (arg_min >= 0 && arg_min <= 1) {
-        return dist;
-    }
-    return -dist;
 }
 
 typedef struct {
@@ -500,25 +456,22 @@ int edge_array_inside(edge_array edges, vec2 origin) {
     return acc % 2 == 0;
 }
 
+void vec2_min_max(vec2 p, vec2* min, vec2* max) {
+    min->x = p.x < min->x ? p.x : min->x;
+    min->y = p.y < min->y ? p.y : min->y;
+    max->x = p.x > max->x ? p.x : max->x;
+    max->y = p.y > max->y ? p.y : max->y;
+}
+
 void edge_array_fit_to_grid(edge_array edges, vec2 dim) {
     vec2 min = {.x = INFINITY, .y = INFINITY};
     vec2 max = {.x = -INFINITY, .y = -INFINITY};
     for (int i = 0; i < edges.len; i++) {
-        edge* e = edges.data + i;
-        vec2 p = e->start;
-        min.x = p.x < min.x ? p.x : min.x;
-        min.y = p.y < min.y ? p.y : min.y;
-        max.x = p.x > max.x ? p.x : max.x;
-        max.y = p.y > max.y ? p.y : max.y;
-        p = e->end;
-        min.x = p.x < min.x ? p.x : min.x;
-        min.y = p.y < min.y ? p.y : min.y;
-        max.x = p.x > max.x ? p.x : max.x;
-        max.y = p.y > max.y ? p.y : max.y;
+        vec2_min_max(edges.data[i].start, &min, &max);
+        vec2_min_max(edges.data[i].end, &min, &max);
     }
     vec2 len = vec2_sub(max, min);
     vec2 scale = {.x = dim.x / len.x, .y = dim.y / len.y};
-    printf("len: (%g, %g) scale: (%g, %g)\n", len.x, len.y, scale.x, scale.y);
     for (int i = 0; i < edges.len; i++) {
         edge* e = edges.data + i;
         e->start = vec2_mult(vec2_sub(e->start, min), scale);
@@ -590,10 +543,8 @@ typedef struct {
 } decompose_result;
 
 typedef struct {
-    ssize_t width;
-    ssize_t height;
-    ssize_t offX;
-    ssize_t offY;
+    size_t width;
+    size_t height;
 } raster_rec;
 
 int decompose(FT_Library ft_library, decompose_params params, decompose_result* result, raster_rec* rec) {
@@ -601,10 +552,6 @@ int decompose(FT_Library ft_library, decompose_params params, decompose_result* 
     FT_Error err = FT_New_Face(ft_library, params.fontpath, 0, &face);
     if (err) {
         return err;
-    }
-    err = FT_Set_Pixel_Sizes(face, params.pixel_width, params.pixel_height);
-    if (err) {
-        goto cleanup;
     }
     FT_UInt idx = FT_Get_Char_Index(face, params.character);
     if (!idx) {
@@ -615,7 +562,6 @@ int decompose(FT_Library ft_library, decompose_params params, decompose_result* 
     if (err) {
         goto cleanup;
     }
-    FT_Glyph_Metrics* metrics = &face->glyph->metrics;
     if (face->glyph->format != FT_GLYPH_FORMAT_OUTLINE) {
         err = ERR_FACE_NO_OUTLINE;
         goto cleanup;
@@ -648,12 +594,7 @@ int decompose(FT_Library ft_library, decompose_params params, decompose_result* 
         goto cleanup_edges;
     }
     FT_Done_Glyph(glyph);
-    *rec = (raster_rec){
-        .width = params.pixel_width,
-        .height = params.pixel_height,
-        .offX = 0,
-        .offY = 0,
-    };
+    *rec = (raster_rec){.width = params.pixel_width, .height = params.pixel_height};
 
     edge_array_fit_to_grid(result->edges, (vec2){.x = params.pixel_width, .y = params.pixel_height});
     for (int i = 0; i < result->contour_idx.len; i++) {
@@ -705,32 +646,26 @@ int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_s
         return ERR_OOM;
     }
     double max_dist = sqrt(rec.width * rec.width + rec.height * rec.height);
-    for (ssize_t y = 0; y < rec.height; y++) {
-        for (ssize_t x = 0; x < rec.width; x++) {
+    for (size_t y = 0; y < rec.height; y++) {
+        for (size_t x = 0; x < rec.width; x++) {
             edge_point_stats min_blue = {.dist = max_dist};
             edge_point_stats min_green = {.dist = max_dist};
             edge_point_stats min_red = {.dist = max_dist};
-            edge* edge_blue;
-            edge* edge_green;
-            edge* edge_red;
             // at y + 0.5 it is quite likely to pass through a vertex, which confuses the ray
             // casting algorithm, so a small offset is added here, which should make a collision
             // sufficiently unlikely.
-            vec2 origin = (vec2){.x = (x + rec.offX) + 0.5, .y = (y + rec.offY) + 0.5 + 1e-9};
+            vec2 origin = (vec2){.x = x + 0.5, .y = y + 0.5 + 1e-9};
             for (size_t i = 0; i < edges.len; i++) {
                 edge* current = edges.data + i;
                 edge_point_stats dist = edge_dist_ortho(current, origin);
                 if ((current->color & 255) != 0 && edge_point_stats_eq(dist, edge_point_stats_min(dist, min_blue))) {
                     min_blue = dist;
-                    edge_blue = current;
                 }
                 if ((current->color & 255 << 8) != 0 && edge_point_stats_eq(dist, edge_point_stats_min(dist, min_green))) {
                     min_green = dist;
-                    edge_green = current;
                 }
                 if ((current->color & 255 << 16) != 0 && edge_point_stats_eq(dist, edge_point_stats_min(dist, min_red))) {
                     min_red = dist;
-                    edge_red = current;
                 }
             }
             int inside = edge_array_inside(edges, origin);
@@ -818,11 +753,7 @@ int render(render_params params, uint32_t** out, size_t* out_size) {
                 color = color > 255.0 ? 255.0 : color;
                 pixels[x + y * params.render_width] = 255 - color;
             } else {
-                if (median > 127.5) {
-                    pixels[x + y * params.render_width] = 0;
-                } else {
-                    pixels[x + y * params.render_width] = 255;
-                }
+                pixels[x + y * params.render_width] = median > 127.5 ? 0 : 255;
             }
         }
     }
@@ -908,7 +839,6 @@ int write_file(const char* filename, void* buf, size_t buf_size) {
     if (written != buf_size) {
         err = ERR_FILE_IO;
     }
-cleanup:
     fclose(f);
     return err;
 }
