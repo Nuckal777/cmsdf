@@ -55,6 +55,11 @@ double vec2_dist(vec2 a, vec2 b) {
     return sqrt(diff.x * diff.x + diff.y * diff.y);
 }
 
+vec2 vec2_normalize(vec2 a) {
+    double len = sqrt(a.x * a.x + a.y * a.y);
+    return (vec2){.x = a.x / len, .y = a.y / len};
+}
+
 #define EDGE_TY_LINE 1
 #define EDGE_TY_CONIC 2
 #define EDGE_TY_CUBIC 3
@@ -421,6 +426,38 @@ double edge_sgn_dist(edge* e, vec2 origin) {
 }
 
 typedef struct {
+    double dist;
+    double orthogonality;
+} edge_point_stats;
+
+bool edge_point_stats_eq(edge_point_stats a, edge_point_stats b) {
+    return a.dist == b.dist && a.orthogonality == b.orthogonality;
+}
+
+edge_point_stats edge_point_stats_min(edge_point_stats a, edge_point_stats b) {
+    double diff_dist = a.dist - b.dist;
+    double epsilon = 1e-9;
+    if (diff_dist > epsilon) {
+        return b;
+    }
+    if (diff_dist < epsilon) {
+        return a;
+    }
+    return a.orthogonality > b.orthogonality ? a : b;
+}
+
+edge_point_stats edge_dist_ortho(edge* e, vec2 point) {
+    double arg_min = edge_arg_min_dist(e, point);
+    vec2 at = edge_at(e, arg_min);
+    double dist = vec2_dist(at, point);
+
+    vec2 dir = edge_dir(e, arg_min);
+    vec2 diff = vec2_sub(point, at);
+    double ortho = vec2_cross(vec2_normalize(dir), vec2_normalize(diff));
+    return (edge_point_stats){.dist = dist, .orthogonality = ortho};
+}
+
+typedef struct {
     edge* data;
     size_t len;
     size_t cap;
@@ -461,6 +498,34 @@ int edge_array_inside(edge_array edges, vec2 origin) {
         acc += edge_intersect_ray(edges.data + i, origin, (vec2){.x = 1, .y = 0}, intersections);
     }
     return acc % 2 == 0;
+}
+
+void edge_array_fit_to_grid(edge_array edges, vec2 dim) {
+    vec2 min = {.x = INFINITY, .y = INFINITY};
+    vec2 max = {.x = -INFINITY, .y = -INFINITY};
+    for (int i = 0; i < edges.len; i++) {
+        edge* e = edges.data + i;
+        vec2 p = e->start;
+        min.x = p.x < min.x ? p.x : min.x;
+        min.y = p.y < min.y ? p.y : min.y;
+        max.x = p.x > max.x ? p.x : max.x;
+        max.y = p.y > max.y ? p.y : max.y;
+        p = e->end;
+        min.x = p.x < min.x ? p.x : min.x;
+        min.y = p.y < min.y ? p.y : min.y;
+        max.x = p.x > max.x ? p.x : max.x;
+        max.y = p.y > max.y ? p.y : max.y;
+    }
+    vec2 len = vec2_sub(max, min);
+    vec2 scale = {.x = dim.x / len.x, .y = dim.y / len.y};
+    printf("len: (%g, %g) scale: (%g, %g)\n", len.x, len.y, scale.x, scale.y);
+    for (int i = 0; i < edges.len; i++) {
+        edge* e = edges.data + i;
+        e->start = vec2_mult(vec2_sub(e->start, min), scale);
+        e->end = vec2_mult(vec2_sub(e->end, min), scale);
+        e->control1 = vec2_mult(vec2_sub(e->control1, min), scale);
+        e->control2 = vec2_mult(vec2_sub(e->control2, min), scale);
+    }
 }
 
 #define CONTOUR_INDEX_CAP 15
@@ -546,7 +611,7 @@ int decompose(FT_Library ft_library, decompose_params params, decompose_result* 
         err = ERR_FACE_MISSING_GLYPH;
         goto cleanup;
     }
-    err = FT_Load_Glyph(face, idx, FT_LOAD_NO_HINTING);
+    err = FT_Load_Glyph(face, idx, FT_LOAD_NO_SCALE);
     if (err) {
         goto cleanup;
     }
@@ -582,16 +647,15 @@ int decompose(FT_Library ft_library, decompose_params params, decompose_result* 
     if (err) {
         goto cleanup_edges;
     }
-    FT_BBox cbox;
-    FT_Glyph_Get_CBox(glyph, FT_GLYPH_BBOX_PIXELS, &cbox);
     FT_Done_Glyph(glyph);
     *rec = (raster_rec){
-        .width = (cbox.xMax - cbox.xMin),
-        .height = (cbox.yMax - cbox.yMin),
-        .offX = cbox.xMin,
-        .offY = cbox.yMin,
+        .width = params.pixel_width,
+        .height = params.pixel_height,
+        .offX = 0,
+        .offY = 0,
     };
 
+    edge_array_fit_to_grid(result->edges, (vec2){.x = params.pixel_width, .y = params.pixel_height});
     for (int i = 0; i < result->contour_idx.len; i++) {
         edge* start = result->edges.data + result->contour_idx.offsets[i];
         edge* end = NULL;
@@ -625,7 +689,14 @@ cleanup:
     return err;
 }
 
-#define RASTER_COLOR_SCALE 3.0
+#define RASTER_COLOR_SCALE 16.0
+
+double clamp(double a, double min, double max) {
+    if (a > max) {
+        return max;
+    }
+    return a < min ? min : a;
+}
 
 int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_size) {
     *out_size = rec.width * rec.height * sizeof(uint32_t);
@@ -636,9 +707,9 @@ int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_s
     double max_dist = sqrt(rec.width * rec.width + rec.height * rec.height);
     for (ssize_t y = 0; y < rec.height; y++) {
         for (ssize_t x = 0; x < rec.width; x++) {
-            double min_blue = max_dist;
-            double min_green = max_dist;
-            double min_red = max_dist;
+            edge_point_stats min_blue = {.dist = max_dist};
+            edge_point_stats min_green = {.dist = max_dist};
+            edge_point_stats min_red = {.dist = max_dist};
             edge* edge_blue;
             edge* edge_green;
             edge* edge_red;
@@ -648,24 +719,24 @@ int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_s
             vec2 origin = (vec2){.x = (x + rec.offX) + 0.5, .y = (y + rec.offY) + 0.5 + 1e-9};
             for (size_t i = 0; i < edges.len; i++) {
                 edge* current = edges.data + i;
-                double dist = edge_dist(current, origin);
-                if ((current->color & 255) != 0 && dist < min_blue) {
+                edge_point_stats dist = edge_dist_ortho(current, origin);
+                if ((current->color & 255) != 0 && edge_point_stats_eq(dist, edge_point_stats_min(dist, min_blue))) {
                     min_blue = dist;
                     edge_blue = current;
                 }
-                if ((current->color & 255 << 8) != 0 && dist < min_green) {
+                if ((current->color & 255 << 8) != 0 && edge_point_stats_eq(dist, edge_point_stats_min(dist, min_green))) {
                     min_green = dist;
                     edge_green = current;
                 }
-                if ((current->color & 255 << 16) != 0 && dist < min_red) {
+                if ((current->color & 255 << 16) != 0 && edge_point_stats_eq(dist, edge_point_stats_min(dist, min_red))) {
                     min_red = dist;
                     edge_red = current;
                 }
             }
             int inside = edge_array_inside(edges, origin);
-            double val_blue = min_blue / max_dist * RASTER_COLOR_SCALE;
-            double val_green = min_green / max_dist * RASTER_COLOR_SCALE;
-            double val_red = min_red / max_dist * RASTER_COLOR_SCALE;
+            double val_blue = clamp(min_blue.dist / max_dist * RASTER_COLOR_SCALE, 0, 1);
+            double val_green = clamp(min_green.dist / max_dist * RASTER_COLOR_SCALE, 0, 1);
+            double val_red = clamp(min_red.dist / max_dist * RASTER_COLOR_SCALE, 0, 1);
             if (!inside) {
                 val_blue *= -1;
                 val_green *= -1;
