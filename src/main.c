@@ -384,6 +384,7 @@ size_t edge_intersect_ray(edge* e, vec2 origin, vec2 dir, double* out) {
 typedef struct {
     double dist;
     double orthogonality;
+    double sign;
 } edge_point_stats;
 
 bool edge_point_stats_eq(edge_point_stats a, edge_point_stats b) {
@@ -410,7 +411,9 @@ edge_point_stats edge_dist_ortho(edge* e, vec2 point) {
     vec2 dir = edge_dir(e, arg_min);
     vec2 diff = vec2_sub(point, at);
     double ortho = vec2_cross(vec2_normalize(dir), vec2_normalize(diff));
-    return (edge_point_stats){.dist = dist, .orthogonality = ortho};
+    double sign = vec2_cross(dir, vec2_sub(at, point));
+
+    return (edge_point_stats){.dist = dist, .orthogonality = ortho, .sign = sign};
 }
 
 typedef struct {
@@ -672,9 +675,13 @@ int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_s
             double val_blue = clamp(min_blue.dist / max_dist * RASTER_COLOR_SCALE, 0, 1);
             double val_green = clamp(min_green.dist / max_dist * RASTER_COLOR_SCALE, 0, 1);
             double val_red = clamp(min_red.dist / max_dist * RASTER_COLOR_SCALE, 0, 1);
-            if (!inside) {
+            if (min_blue.sign > 0) {
                 val_blue *= -1;
+            }
+            if (min_green.sign > 0) {
                 val_green *= -1;
+            }
+            if (min_red.sign > 0) {
                 val_red *= -1;
             }
             uint32_t blue = (uint32_t)((val_blue + 1) * 127.5);
