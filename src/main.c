@@ -397,7 +397,7 @@ edge_point_stats edge_point_stats_min(edge_point_stats a, edge_point_stats b) {
     if (diff_dist > epsilon) {
         return b;
     }
-    if (diff_dist < epsilon) {
+    if (diff_dist < -epsilon) {
         return a;
     }
     return a.orthogonality > b.orthogonality ? a : b;
@@ -410,7 +410,7 @@ edge_point_stats edge_dist_ortho(edge* e, vec2 point) {
 
     vec2 dir = edge_dir(e, arg_min);
     vec2 diff = vec2_sub(point, at);
-    double ortho = vec2_cross(vec2_normalize(dir), vec2_normalize(diff));
+    double ortho = fabs(vec2_cross(vec2_normalize(dir), vec2_normalize(diff)));
     double sign = vec2_cross(dir, vec2_sub(at, point));
 
     return (edge_point_stats){.dist = dist, .orthogonality = ortho, .sign = sign};
@@ -671,17 +671,16 @@ int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_s
                     min_red = dist;
                 }
             }
-            int inside = edge_array_inside(edges, origin);
             double val_blue = clamp(min_blue.dist / max_dist * RASTER_COLOR_SCALE, 0, 1);
             double val_green = clamp(min_green.dist / max_dist * RASTER_COLOR_SCALE, 0, 1);
             double val_red = clamp(min_red.dist / max_dist * RASTER_COLOR_SCALE, 0, 1);
-            if (min_blue.sign > 0) {
+            if (min_blue.sign < 0) {
                 val_blue *= -1;
             }
-            if (min_green.sign > 0) {
+            if (min_green.sign < 0) {
                 val_green *= -1;
             }
-            if (min_red.sign > 0) {
+            if (min_red.sign < 0) {
                 val_red *= -1;
             }
             uint32_t blue = (uint32_t)((val_blue + 1) * 127.5);
@@ -707,8 +706,10 @@ uint32_t sample_bilinear(vec2 at, uint32_t* image, size_t width, size_t height, 
     uint32_t x = (uint32_t)int_x;
     uint32_t y = (uint32_t)int_y;
 
-    uint32_t high_x = int_x + 1;
-    uint32_t high_y = int_y + 1;
+    frac_x = frac_x >= 0 ? frac_x : 1 - frac_x;
+    frac_y = frac_y >= 0 ? frac_y : 1 - frac_y;
+    uint32_t high_x = at.x < 0 ? int_x : int_x + 1;
+    uint32_t high_y = at.y < 0 ? int_y : int_y + 1;
     high_x = high_x >= width ? width - 1 : high_x;
     high_y = high_y >= height ? height - 1 : high_y;
 
@@ -719,7 +720,7 @@ uint32_t sample_bilinear(vec2 at, uint32_t* image, size_t width, size_t height, 
     return part00 + part01 + part10 + part11;
 }
 
-double median3(double a, double b, double c) {
+double median3d(double a, double b, double c) {
     if (a > b) {
         if (b > c) return b;
         return (a > c) ? c : a;
@@ -752,15 +753,15 @@ int render(render_params params, uint32_t** out, size_t* out_size) {
             double blue = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 0);
             double green = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 8);
             double red = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 16);
-            double median = median3(blue, green, red);
+            double median = median3d(blue, green, red);
             if (params.anti_aliasing) {
                 double dist = median - 127.5;
                 double color = (dist + 1.0) * 127.5;
                 color = color < 0 ? 0 : color;
                 color = color > 255.0 ? 255.0 : color;
-                pixels[x + y * params.render_width] = 255 - color;
+                pixels[x + y * params.render_width] = color;
             } else {
-                pixels[x + y * params.render_width] = median > 127.5 ? 0 : 255;
+                pixels[x + y * params.render_width] = median > 127.5 ? 255 : 0;
             }
         }
     }
