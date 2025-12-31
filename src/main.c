@@ -694,6 +694,37 @@ int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_s
     return 0;
 }
 
+size_t draw_edges(edge_array edges, raster_rec rec, uint32_t* pixels) {
+    if (pixels == NULL) {
+        return rec.width * rec.width * sizeof(uint32_t);
+    }
+    for (size_t y = 0; y < rec.height; y++) {
+        for (size_t x = 0; x < rec.width; x++) {
+            edge* closet_edge;
+            double min_dist = INFINITY;
+            // at y + 0.5 it is quite likely to pass through a vertex, which confuses the ray
+            // casting algorithm, so a small offset is added here, which should make a collision
+            // sufficiently unlikely.
+            vec2 origin = (vec2){.x = x + 0.5, .y = y + 0.5 + 1e-9};
+            for (size_t i = 0; i < edges.len; i++) {
+                edge* current = edges.data + i;
+                edge_point_stats dist = edge_dist_ortho(current, origin);
+                if (dist.dist < min_dist) {
+                    min_dist = dist.dist;
+                    closet_edge = current;
+                }
+            }
+            size_t idx = x + y * rec.width;
+            if (min_dist > 1.5) {
+                pixels[idx] = 0;
+            } else {
+                pixels[idx] = closet_edge->color;
+            }
+        }
+    }
+    return rec.width * rec.height * sizeof(uint32_t);
+}
+
 uint32_t extract_shifted(uint32_t val, uint32_t shift) {
     return (val & 255 << shift) >> shift;
 }
@@ -934,6 +965,39 @@ cleanup_edges:
     return err;
 }
 
+int prog_edges(FT_Library ft_library, decompose_params params) {
+    decompose_result result;
+    raster_rec rec;
+    int err = decompose(ft_library, params, &result, &rec);
+    if (err) {
+        return err;
+    }
+    size_t pixels_size = draw_edges(result.edges, rec, NULL);
+    uint32_t* pixels = malloc(pixels_size);
+    if (!pixels) {
+        err = ERR_OOM;
+        goto cleanup_edges;
+    }
+    draw_edges(result.edges, rec, pixels);
+    bmp_params edges_bmp_params = {.data = pixels, .width = rec.width, .height = rec.height};
+    uint8_t* buf = malloc(bmp_write(edges_bmp_params, NULL));
+    if (!buf) {
+        err = ERR_OOM;
+        goto cleanup_pixels;
+    }
+    size_t bmp_size = bmp_write(edges_bmp_params, buf);
+    err = write_file("edges.bmp", buf, bmp_size);
+    if (err) {
+        printf("failed to write file: %d\n", err);
+    }
+    free(buf);
+cleanup_pixels:
+    free(pixels);
+cleanup_edges:
+    free(result.edges.data);
+    return err;
+}
+
 int prog_render(size_t render_width, size_t render_height) {
     printf("w: %zu, h: %zu\n", render_width, render_height);
     uint8_t* bmp_data;
@@ -1051,30 +1115,34 @@ int main(int argc, char* argv[]) {
     prog_args args;
     int err = parse_args(argc, argv, &args);
     if (err) {
-        fprintf(stderr, "usage: cmsdf [generate|render]\n");
+        fprintf(stderr, "usage: cmsdf [generate|edges|render]\n");
         return EXIT_FAILURE;
     }
-    if (strcmp(args.mode, "generate") == 0) {
-        FT_Library ft_library;
-        if (FT_Init_FreeType(&ft_library)) {
-            printf("failed to init freetype: %d\n", err);
-            return EXIT_FAILURE;
-        }
-        decompose_params params = {
-            .fontpath = args.font,
-            .character = args.character,
-            .pixel_width = args.width,
-            .pixel_height = args.height,
-        };
-        err = prog_generate(ft_library, params, args.verbose);
-        if (FT_Done_FreeType(ft_library)) {
-            printf("failed to deinit freetype: %d\n", err);
-        }
-    } else if (strcmp(args.mode, "render") == 0) {
+    if (strcmp(args.mode, "render") == 0) {
         err = prog_render(args.width, args.height);
+        return err ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
+    FT_Library ft_library;
+    if (FT_Init_FreeType(&ft_library)) {
+        printf("failed to init freetype: %d\n", err);
+        return EXIT_FAILURE;
+    }
+    decompose_params params = {
+        .fontpath = args.font,
+        .character = args.character,
+        .pixel_width = args.width,
+        .pixel_height = args.height,
+    };
+    if (strcmp(args.mode, "generate") == 0) {
+        err = prog_generate(ft_library, params, args.verbose);
+    } else if (strcmp(args.mode, "edges") == 0) {
+        err = prog_edges(ft_library, params);
     } else {
         fprintf(stderr, "unknown mode\n");
         err = ERR_INVALID_ARGS;
+    }
+    if (FT_Done_FreeType(ft_library)) {
+        printf("failed to deinit freetype: %d\n", err);
     }
     return err ? EXIT_FAILURE : EXIT_SUCCESS;
 }
