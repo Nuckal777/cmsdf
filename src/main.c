@@ -642,11 +642,9 @@ double clamp(double a, double min, double max) {
     return a < min ? min : a;
 }
 
-int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_size) {
-    *out_size = rec.width * rec.height * sizeof(uint32_t);
-    uint32_t* pixels = malloc(*out_size);
+size_t raster_edges(edge_array edges, raster_rec rec, uint32_t* pixels) {
     if (!pixels) {
-        return ERR_OOM;
+        return rec.width * rec.height * sizeof(uint32_t);
     }
     double max_dist = sqrt(rec.width * rec.width + rec.height * rec.height);
     for (size_t y = 0; y < rec.height; y++) {
@@ -690,12 +688,12 @@ int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_s
             pixels[idx] = blue | green << 8 | red << 16;
         }
     }
-    *out = pixels;
-    return 0;
+    return rec.width * rec.height * sizeof(uint32_t);
+    ;
 }
 
 size_t draw_edges(edge_array edges, raster_rec rec, uint32_t* pixels) {
-    if (pixels == NULL) {
+    if (!pixels) {
         return rec.width * rec.width * sizeof(uint32_t);
     }
     for (size_t y = 0; y < rec.height; y++) {
@@ -939,13 +937,12 @@ int prog_generate(FT_Library ft_library, decompose_params params, bool verbose) 
             printf("start: (%g, %g) end: (%g, %g)\n", current->start.x, current->start.y, current->end.x, current->end.y);
         }
     }
-    size_t raster_size;
-    uint32_t* raster;
-    err = raster_edges(result.edges, rec, &raster, &raster_size);
-    if (err) {
-        printf("failed to raster edges: %d\n", err);
+    uint32_t* raster = malloc(raster_edges(result.edges, rec, NULL));
+    if (!raster) {
+        err = ERR_OOM;
         goto cleanup_edges;
     }
+    raster_edges(result.edges, rec, raster);
     bmp_params raster_bmp_params = {.data = raster, .width = rec.width, .height = rec.height};
     uint8_t* buf = malloc(bmp_write(raster_bmp_params, NULL));
     if (!buf) {
