@@ -683,9 +683,9 @@ int raster_edges(edge_array edges, raster_rec rec, uint32_t** out, size_t* out_s
             if (min_red.sign < 0) {
                 val_red *= -1;
             }
-            uint32_t blue = (uint32_t)((val_blue + 1) * 127.5);
-            uint32_t green = (uint32_t)((val_green + 1) * 127.5);
-            uint32_t red = (uint32_t)((val_red + 1) * 127.5);
+            uint32_t blue = (uint32_t)round((val_blue + 1) * 127.5);
+            uint32_t green = (uint32_t)round((val_green + 1) * 127.5);
+            uint32_t red = (uint32_t)round((val_red + 1) * 127.5);
             size_t idx = x + y * rec.width;
             pixels[idx] = blue | green << 8 | red << 16;
         }
