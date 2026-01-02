@@ -695,14 +695,16 @@ uint32_t get_channel(uint32_t val, uint32_t shift) {
     return (val >> shift) & 0xff;
 }
 
-double median3u(uint8_t a, uint8_t b, uint8_t c) {
-    if (a > b) {
-        if (b > c) return b;
-        return (a > c) ? c : a;
-    } else {
-        if (a > c) return a;
-        return (b > c) ? c : b;
-    }
+// based on sorting network
+// should compile branchless with cmovs on
+// gcc and clang with -O2
+uint8_t median3u(uint8_t a, uint8_t b, uint8_t c) {
+    // clang-format off
+    if (a > b) { uint8_t t = a; a = b; b = t; }
+    if (b > c) { uint8_t t = b; b = c; c = t; }
+    if (a > b) { uint8_t t = a; a = b; b = t; }
+    // clang-format on
+    return b;
 }
 
 // https://github.com/Chlumsky/msdfgen/issues/74#issuecomment-479573572
@@ -712,6 +714,16 @@ double median3u(uint8_t a, uint8_t b, uint8_t c) {
 // - the opposing sign occurs in a different channel
 // - the median sign flips (so the pixel encode an edge)
 bool causes_defect(uint32_t target, uint32_t neighbour) {
+    uint32_t mask = 0x00808080;
+    if ((target & mask) == 0 || (neighbour & mask) == 0) {  // all channels < 128
+        return false;
+    }
+    if ((target & mask) == mask || (neighbour & mask) == mask) {  // all channels > 127
+        return false;
+    }
+    if ((target & mask) == (neighbour & mask)) {  // signs are equal across channels
+        return false;
+    }
     uint32_t tb = get_channel(target, 0);
     uint32_t tg = get_channel(target, 8);
     uint32_t tr = get_channel(target, 16);
@@ -720,28 +732,7 @@ bool causes_defect(uint32_t target, uint32_t neighbour) {
     uint32_t ng = get_channel(neighbour, 8);
     uint32_t nr = get_channel(neighbour, 16);
     uint8_t n_median = median3u(nb, ng, nr);
-    if ((t_median > 127) != (n_median > 127)) {
-        return false;
-    }
-    if (tb < 128 && tg < 128 && tr < 128) {
-        return false;
-    }
-    if (tb > 127 && tg > 127 && tr > 127) {
-        return false;
-    }
-    if (nb < 128 && ng < 128 && nr < 128) {
-        return false;
-    }
-    if (nb > 127 && ng > 127 && nr > 127) {
-        return false;
-    }
-    // signs in all colors must be equal to be safe, given an unequal sign of the median
-    for (size_t i = 0; i < 32; i += 8) {
-        if ((get_channel(target, i) > 127) != (get_channel(neighbour, i) > 127)) {
-            return true;
-        }
-    }
-    return false;
+    return (t_median > 127) == (n_median > 127);
 }
 
 // Basic error correction
@@ -751,8 +742,8 @@ bool causes_defect(uint32_t target, uint32_t neighbour) {
 // not interfere with further checks.
 void postprocess(uint32_t* pixels, size_t width, size_t height, bool verbose) {
     size_t issue_count = 0;
-    for (size_t x = 0; x < width - 1; x++) {
-        for (size_t y = 0; y < height - 1; y++) {
+    for (size_t y = 0; y < height - 1; y++) {
+        for (size_t x = 0; x < width - 1; x++) {
             size_t check = x + y * width;
             size_t right = check + 1;
             size_t up = check + width;
@@ -835,13 +826,12 @@ uint32_t sample_bilinear(vec2 at, uint32_t* image, size_t width, size_t height, 
 }
 
 double median3d(double a, double b, double c) {
-    if (a > b) {
-        if (b > c) return b;
-        return (a > c) ? c : a;
-    } else {
-        if (a > c) return a;
-        return (b > c) ? c : b;
-    }
+    // clang-format off
+    if (a > b) { uint8_t t = a; a = b; b = t; }
+    if (b > c) { uint8_t t = b; b = c; c = t; }
+    if (a > b) { uint8_t t = a; a = b; b = t; }
+    // clang-format on
+    return b;
 }
 
 typedef struct {
@@ -861,8 +851,8 @@ int render(render_params params, uint32_t** out, size_t* out_size) {
     }
     double x_mult = (double)params.msdf_width / params.render_width;
     double y_mult = (double)params.msdf_height / params.render_height;
-    for (size_t x = 0; x < params.render_width; x++) {
-        for (size_t y = 0; y < params.render_height; y++) {
+    for (size_t y = 0; y < params.render_height; y++) {
+        for (size_t x = 0; x < params.render_width; x++) {
             vec2 offset = {.x = x * x_mult - 0.5, .y = y * y_mult - 0.5};
             double blue = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 0);
             double green = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 8);
