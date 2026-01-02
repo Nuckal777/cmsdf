@@ -26,36 +26,36 @@ typedef struct {
     double y;
 } vec2;
 
-vec2 splat2(double v) {
+static vec2 splat2(double v) {
     return (vec2){.x = v, .y = v};
 }
 
-vec2 vec2_add(vec2 a, vec2 b) {
+static vec2 vec2_add(vec2 a, vec2 b) {
     return (vec2){.x = a.x + b.x, .y = a.y + b.y};
 }
 
-vec2 vec2_sub(vec2 a, vec2 b) {
+static vec2 vec2_sub(vec2 a, vec2 b) {
     return (vec2){.x = a.x - b.x, .y = a.y - b.y};
 }
 
-vec2 vec2_mult(vec2 a, vec2 b) {
+static vec2 vec2_mult(vec2 a, vec2 b) {
     return (vec2){.x = a.x * b.x, .y = a.y * b.y};
 }
 
-double vec2_dot(vec2 a, vec2 b) {
+static double vec2_dot(vec2 a, vec2 b) {
     return a.x * b.x + a.y * b.y;
 }
 
-double vec2_cross(vec2 a, vec2 b) {
+static double vec2_cross(vec2 a, vec2 b) {
     return a.x * b.y - a.y * b.x;
 }
 
-double vec2_dist(vec2 a, vec2 b) {
+static double vec2_dist(vec2 a, vec2 b) {
     vec2 diff = vec2_sub(a, b);
     return sqrt(diff.x * diff.x + diff.y * diff.y);
 }
 
-vec2 vec2_normalize(vec2 a) {
+static vec2 vec2_normalize(vec2 a) {
     double len = sqrt(a.x * a.x + a.y * a.y);
     return (vec2){.x = a.x / len, .y = a.y / len};
 }
@@ -77,7 +77,7 @@ typedef struct {
     uint32_t color;
 } edge;
 
-uint8_t edge_type(edge* e) {
+static uint8_t edge_type(edge* e) {
     if (!isnan(e->control2.x)) {
         return EDGE_TY_CUBIC;
     }
@@ -87,7 +87,7 @@ uint8_t edge_type(edge* e) {
     return EDGE_TY_LINE;
 }
 
-edge make_line(vec2 start, vec2 end) {
+static edge make_line(vec2 start, vec2 end) {
     return (edge){
         .start = start,
         .end = end,
@@ -97,7 +97,7 @@ edge make_line(vec2 start, vec2 end) {
     };
 }
 
-edge make_conic(vec2 start, vec2 end, vec2 control1) {
+static edge make_conic(vec2 start, vec2 end, vec2 control1) {
     return (edge){
         .start = start,
         .end = end,
@@ -107,7 +107,7 @@ edge make_conic(vec2 start, vec2 end, vec2 control1) {
     };
 }
 
-edge make_cubic(vec2 start, vec2 end, vec2 control1, vec2 control2) {
+static edge make_cubic(vec2 start, vec2 end, vec2 control1, vec2 control2) {
     return (edge){
         .start = start,
         .end = end,
@@ -117,7 +117,7 @@ edge make_cubic(vec2 start, vec2 end, vec2 control1, vec2 control2) {
     };
 }
 
-vec2 edge_at(edge* e, double t) {
+static vec2 edge_at(edge* e, double t) {
     uint8_t ty = edge_type(e);
     switch (ty) {
         case EDGE_TY_LINE:
@@ -143,7 +143,7 @@ vec2 edge_at(edge* e, double t) {
     return (vec2){};
 }
 
-vec2 edge_dir(edge* e, double t) {
+static vec2 edge_dir(edge* e, double t) {
     uint8_t ty = edge_type(e);
     switch (ty) {
         case EDGE_TY_LINE:
@@ -166,7 +166,7 @@ vec2 edge_dir(edge* e, double t) {
     return (vec2){};
 }
 
-int approx_eq_abs(double a, double b, double tolerance) {
+static int approx_eq_abs(double a, double b, double tolerance) {
     assert(tolerance >= 0);
     if (a == b) {
         return 1;
@@ -177,7 +177,7 @@ int approx_eq_abs(double a, double b, double tolerance) {
     return fabs(a - b) <= tolerance;
 }
 
-size_t solveCubic(double coeff[4], double* out) {
+static size_t solveCubic(double coeff[4], double* out) {
     double a = coeff[0];
     double b = coeff[1];
     double c = coeff[2];
@@ -214,14 +214,14 @@ size_t solveCubic(double coeff[4], double* out) {
     return 3;
 }
 
-double min_dist_sq(edge* e, double t, vec2 point) {
+static double min_dist_sq(edge* e, double t, vec2 point) {
     vec2 on_curve = edge_at(e, t);
     vec2 tangent = edge_dir(e, t);
     vec2 to_point = vec2_sub(on_curve, point);
     return 2 * vec2_dot(to_point, tangent);
 }
 
-double edge_arg_min_dist(edge* e, vec2 point) {
+static double edge_arg_min_dist(edge* e, vec2 point) {
     uint8_t ty = edge_type(e);
     switch (ty) {
         case EDGE_TY_LINE: {
@@ -307,91 +307,17 @@ double edge_arg_min_dist(edge* e, vec2 point) {
     return NAN;
 }
 
-size_t edge_intersect_ray(edge* e, vec2 origin, vec2 dir, double* out) {
-    uint8_t ty = edge_type(e);
-    switch (ty) {
-        case EDGE_TY_LINE: {
-            vec2 edge_dir = vec2_sub(e->end, e->start);
-            double cross_dir = vec2_cross(edge_dir, dir);
-            if (cross_dir == 0.0) {
-                return 0;
-            }
-            vec2 shifted = vec2_sub(e->start, origin);
-            double t = vec2_cross(dir, shifted) / cross_dir;
-            double s = vec2_cross(edge_dir, shifted) / cross_dir;
-            if (t < 0 || t > 1 || s < 0) {
-                return 0;
-            }
-            out[0] = t;
-            return 1;
-        }
-        case EDGE_TY_CONIC: {  // doesn't support vertical rays
-            assert(dir.x != 0);
-            vec2 a = vec2_sub(vec2_add(e->start, e->end), vec2_mult(e->control1, splat2(2)));
-            vec2 b = vec2_mult(vec2_sub(e->control1, e->start), splat2(2));
-            vec2 c = vec2_sub(e->start, origin);
-            double slope = dir.y / dir.x;
-
-            double denominator = a.y - slope * a.x;
-            double p = (b.y - slope * b.x) / denominator;
-            double q = (c.y - slope * c.x) / denominator;
-            double ts[2] = {-p / 2 + sqrt((p * p / 4) - q), -p / 2 - sqrt((p * p / 4) - q)};
-            size_t count = 0;
-            for (size_t i = 0; i < 2; i++) {
-                if (ts[i] < 0 || ts[i] > 1) {
-                    continue;
-                }
-                double s = a.x * ts[i] * ts[i] + b.x * ts[i] + c.x;
-                if (s >= 0) {
-                    out[count] = ts[i];
-                    count++;
-                }
-            }
-            if (count == 2 && out[0] == out[1]) {
-                return 1;
-            }
-            return count;
-        }
-        case EDGE_TY_CUBIC: {
-            vec2 a = vec2_add(vec2_sub(vec2_mult(splat2(3), e->control1), e->start), vec2_sub(e->end, vec2_mult(splat2(3), e->control2)));
-            vec2 b = vec2_add(vec2_sub(vec2_mult(splat2(3), e->start), vec2_mult(splat2(6), e->control1)), vec2_mult(splat2(3), e->control2));
-            vec2 c = vec2_add(vec2_mult(splat2(-3), e->start), vec2_mult(splat2(3), e->control1));
-            vec2 d = e->start;
-
-            double coeff[4] = {vec2_cross(a, dir), vec2_cross(b, dir), vec2_cross(c, dir), vec2_cross(d, dir) - vec2_cross(origin, dir)};
-            double roots[3];
-            size_t root_count = solveCubic(coeff, roots);
-            size_t count = 0;
-            for (size_t i = 0; i < root_count; i++) {
-                if (roots[i] < 0 || roots[i] > 1) {
-                    continue;
-                }
-                vec2 at = edge_at(e, roots[i]);
-                double dot = vec2_dot(vec2_sub(at, origin), dir);
-                double s = dot / (dir.x * dir.x + dir.y * dir.y);
-                if (s > 0) {
-                    out[count] = roots[i];
-                    count++;
-                }
-            }
-            return count;
-        }
-    }
-    assert(0);
-    return 0;
-}
-
 typedef struct {
     double dist;
     double orthogonality;
     double sign;
 } edge_point_stats;
 
-bool edge_point_stats_eq(edge_point_stats a, edge_point_stats b) {
+static bool edge_point_stats_eq(edge_point_stats a, edge_point_stats b) {
     return a.dist == b.dist && a.orthogonality == b.orthogonality;
 }
 
-edge_point_stats edge_point_stats_min(edge_point_stats a, edge_point_stats b) {
+static edge_point_stats edge_point_stats_min(edge_point_stats a, edge_point_stats b) {
     double diff_dist = a.dist - b.dist;
     double epsilon = 1e-9;
     if (diff_dist > epsilon) {
@@ -403,7 +329,7 @@ edge_point_stats edge_point_stats_min(edge_point_stats a, edge_point_stats b) {
     return a.orthogonality > b.orthogonality ? a : b;
 }
 
-edge_point_stats edge_dist_ortho(edge* e, vec2 point) {
+static edge_point_stats edge_dist_ortho(edge* e, vec2 point) {
     double arg_min = edge_arg_min_dist(e, point);
     vec2 at = edge_at(e, arg_min);
     double dist = vec2_dist(at, point);
@@ -424,7 +350,7 @@ typedef struct {
 
 #define EDGE_ARRAY_DEFAULT_CAP 16
 
-int edge_array_new(edge_array* arr) {
+static int edge_array_new(edge_array* arr) {
     arr->data = malloc(sizeof(edge) * EDGE_ARRAY_DEFAULT_CAP);
     if (!arr->data) {
         return ERR_OOM;
@@ -434,7 +360,7 @@ int edge_array_new(edge_array* arr) {
     return 0;
 }
 
-int edge_array_push(edge_array* arr, edge e) {
+static int edge_array_push(edge_array* arr, edge e) {
     if (arr->len == arr->cap - 1) {
         size_t new_cap = arr->cap * 3 / 2;
         edge* tmp = realloc(arr->data, sizeof(edge) * new_cap);
@@ -450,23 +376,14 @@ int edge_array_push(edge_array* arr, edge e) {
     return 0;
 }
 
-int edge_array_inside(edge_array edges, vec2 origin) {
-    size_t acc = 0;
-    double intersections[3];
-    for (size_t i = 0; i < edges.len; i++) {
-        acc += edge_intersect_ray(edges.data + i, origin, (vec2){.x = 1, .y = 0}, intersections);
-    }
-    return acc % 2 == 0;
-}
-
-void vec2_min_max(vec2 p, vec2* min, vec2* max) {
+static void vec2_min_max(vec2 p, vec2* min, vec2* max) {
     min->x = p.x < min->x ? p.x : min->x;
     min->y = p.y < min->y ? p.y : min->y;
     max->x = p.x > max->x ? p.x : max->x;
     max->y = p.y > max->y ? p.y : max->y;
 }
 
-void edge_array_fit_to_grid(edge_array edges, vec2 dim) {
+static void edge_array_fit_to_grid(edge_array edges, vec2 dim) {
     vec2 min = {.x = INFINITY, .y = INFINITY};
     vec2 max = {.x = -INFINITY, .y = -INFINITY};
     for (int i = 0; i < edges.len; i++) {
@@ -497,11 +414,11 @@ typedef struct {
     contour_index contour_idx;
 } decompose_ctx;
 
-vec2 from_ft_vec(FT_Vector v) {
+static vec2 from_ft_vec(FT_Vector v) {
     return (vec2){.x = v.x / 64.0, .y = v.y / 64.0};
 }
 
-int decompose_move_to(const FT_Vector* to, void* user) {
+static int decompose_move_to(const FT_Vector* to, void* user) {
     decompose_ctx* ctx = (decompose_ctx*)user;
     ctx->start = from_ft_vec(*to);
     if (ctx->contour_idx.len == CONTOUR_INDEX_CAP - 1) {
@@ -512,21 +429,21 @@ int decompose_move_to(const FT_Vector* to, void* user) {
     return 0;
 }
 
-int decompose_line_to(const FT_Vector* to, void* user) {
+static int decompose_line_to(const FT_Vector* to, void* user) {
     decompose_ctx* ctx = (decompose_ctx*)user;
     int err = edge_array_push(&ctx->edges, make_line(ctx->start, from_ft_vec(*to)));
     ctx->start = from_ft_vec(*to);
     return err;
 }
 
-int decompose_conic_to(const FT_Vector* control, const FT_Vector* to, void* user) {
+static int decompose_conic_to(const FT_Vector* control, const FT_Vector* to, void* user) {
     decompose_ctx* ctx = (decompose_ctx*)user;
     int err = edge_array_push(&ctx->edges, make_conic(ctx->start, from_ft_vec(*to), from_ft_vec(*control)));
     ctx->start = from_ft_vec(*to);
     return err;
 }
 
-int decompose_cubic_to(const FT_Vector* control1, const FT_Vector* control2, const FT_Vector* to, void* user) {
+static int decompose_cubic_to(const FT_Vector* control1, const FT_Vector* control2, const FT_Vector* to, void* user) {
     decompose_ctx* ctx = (decompose_ctx*)user;
     int err = edge_array_push(&ctx->edges, make_cubic(ctx->start, from_ft_vec(*to), from_ft_vec(*control1), from_ft_vec(*control2)));
     ctx->start = from_ft_vec(*to);
@@ -635,7 +552,7 @@ cleanup:
 
 #define RASTER_COLOR_SCALE 16.0
 
-double clamp(double a, double min, double max) {
+static double clamp(double a, double min, double max) {
     if (a > max) {
         return max;
     }
@@ -652,10 +569,7 @@ size_t raster_edges(edge_array edges, raster_rec rec, uint32_t* pixels) {
             edge_point_stats min_blue = {.dist = max_dist};
             edge_point_stats min_green = {.dist = max_dist};
             edge_point_stats min_red = {.dist = max_dist};
-            // at y + 0.5 it is quite likely to pass through a vertex, which confuses the ray
-            // casting algorithm, so a small offset is added here, which should make a collision
-            // sufficiently unlikely.
-            vec2 origin = (vec2){.x = x + 0.5, .y = y + 0.5 + 1e-9};
+            vec2 origin = (vec2){.x = x + 0.5, .y = y + 0.5};
             for (size_t i = 0; i < edges.len; i++) {
                 edge* current = edges.data + i;
                 edge_point_stats dist = edge_dist_ortho(current, origin);
@@ -684,21 +598,20 @@ size_t raster_edges(edge_array edges, raster_rec rec, uint32_t* pixels) {
             uint32_t blue = (uint32_t)round((val_blue + 1) * 127.5);
             uint32_t green = (uint32_t)round((val_green + 1) * 127.5);
             uint32_t red = (uint32_t)round((val_red + 1) * 127.5);
-            size_t idx = x + y * rec.width;
-            pixels[idx] = blue | green << 8 | red << 16;
+            pixels[x + y * rec.width] = blue | green << 8 | red << 16;
         }
     }
     return rec.width * rec.height * sizeof(uint32_t);
 }
 
-uint32_t get_channel(uint32_t val, uint32_t shift) {
+static uint32_t get_channel(uint32_t val, uint32_t shift) {
     return (val >> shift) & 0xff;
 }
 
 // based on sorting network
 // should compile branchless with cmovs on
 // gcc and clang with -O2
-uint8_t median3u(uint8_t a, uint8_t b, uint8_t c) {
+static uint8_t median3u(uint8_t a, uint8_t b, uint8_t c) {
     // clang-format off
     if (a > b) { uint8_t t = a; a = b; b = t; }
     if (b > c) { uint8_t t = b; b = c; c = t; }
@@ -713,7 +626,7 @@ uint8_t median3u(uint8_t a, uint8_t b, uint8_t c) {
 // - the remaining component has an opposing sign
 // - the opposing sign occurs in a different channel
 // - the median sign flips (so the pixel encode an edge)
-bool causes_defect(uint32_t target, uint32_t neighbour) {
+static bool causes_defect(uint32_t target, uint32_t neighbour) {
     uint32_t mask = 0x00808080;
     if ((target & mask) == 0 || (neighbour & mask) == 0) {  // all channels < 128
         return false;
@@ -724,14 +637,8 @@ bool causes_defect(uint32_t target, uint32_t neighbour) {
     if ((target & mask) == (neighbour & mask)) {  // signs are equal across channels
         return false;
     }
-    uint32_t tb = get_channel(target, 0);
-    uint32_t tg = get_channel(target, 8);
-    uint32_t tr = get_channel(target, 16);
-    uint8_t t_median = median3u(tb, tg, tr);
-    uint32_t nb = get_channel(neighbour, 0);
-    uint32_t ng = get_channel(neighbour, 8);
-    uint32_t nr = get_channel(neighbour, 16);
-    uint8_t n_median = median3u(nb, ng, nr);
+    uint8_t t_median = median3u(get_channel(target, 0), get_channel(target, 8), get_channel(target, 16));
+    uint8_t n_median = median3u(get_channel(neighbour, 0), get_channel(neighbour, 8), get_channel(neighbour, 16));
     return (t_median > 127) == (n_median > 127);
 }
 
@@ -740,7 +647,9 @@ bool causes_defect(uint32_t target, uint32_t neighbour) {
 // If the pixel could causes a defect, all channels are set to the median channel.
 // As the loop goes from the bottom-left to the top-right fixing a pixel does
 // not interfere with further checks.
-void postprocess(uint32_t* pixels, size_t width, size_t height, bool verbose) {
+// Technically the top-right neighbour could also be checked, but from a few tests
+// that did more harm than help.
+static void postprocess(uint32_t* pixels, size_t width, size_t height, bool verbose) {
     size_t issue_count = 0;
     for (size_t y = 0; y < height - 1; y++) {
         for (size_t x = 0; x < width - 1; x++) {
@@ -772,7 +681,7 @@ void postprocess(uint32_t* pixels, size_t width, size_t height, bool verbose) {
     }
 }
 
-size_t draw_edges(edge_array edges, raster_rec rec, uint32_t* pixels) {
+static size_t draw_edges(edge_array edges, raster_rec rec, uint32_t* pixels) {
     if (!pixels) {
         return rec.width * rec.width * sizeof(uint32_t);
     }
@@ -780,10 +689,7 @@ size_t draw_edges(edge_array edges, raster_rec rec, uint32_t* pixels) {
         for (size_t x = 0; x < rec.width; x++) {
             edge* closet_edge;
             double min_dist = INFINITY;
-            // at y + 0.5 it is quite likely to pass through a vertex, which confuses the ray
-            // casting algorithm, so a small offset is added here, which should make a collision
-            // sufficiently unlikely.
-            vec2 origin = (vec2){.x = x + 0.5, .y = y + 0.5 + 1e-9};
+            vec2 origin = (vec2){.x = x + 0.5, .y = y + 0.5};
             for (size_t i = 0; i < edges.len; i++) {
                 edge* current = edges.data + i;
                 edge_point_stats dist = edge_dist_ortho(current, origin);
@@ -803,7 +709,7 @@ size_t draw_edges(edge_array edges, raster_rec rec, uint32_t* pixels) {
     return rec.width * rec.height * sizeof(uint32_t);
 }
 
-uint32_t sample_bilinear(vec2 at, uint32_t* image, size_t width, size_t height, uint32_t shift) {
+static uint32_t sample_bilinear(vec2 at, uint32_t* image, size_t width, size_t height, uint32_t shift) {
     double frac_x, int_x;
     frac_x = modf(at.x, &int_x);
     double frac_y, int_y;
@@ -825,7 +731,7 @@ uint32_t sample_bilinear(vec2 at, uint32_t* image, size_t width, size_t height, 
     return part00 + part01 + part10 + part11;
 }
 
-double median3d(double a, double b, double c) {
+static double median3d(double a, double b, double c) {
     // clang-format off
     if (a > b) { uint8_t t = a; a = b; b = t; }
     if (b > c) { uint8_t t = b; b = c; c = t; }
@@ -843,11 +749,9 @@ typedef struct {
     bool anti_aliasing;
 } render_params;
 
-int render(render_params params, uint32_t** out, size_t* out_size) {
-    *out_size = params.render_width * params.render_height * sizeof(uint32_t);
-    uint32_t* pixels = malloc(*out_size);
+size_t render(render_params params, uint32_t* pixels) {
     if (!pixels) {
-        return ERR_OOM;
+        return params.render_width * params.render_height * sizeof(uint32_t);
     }
     double x_mult = (double)params.msdf_width / params.render_width;
     double y_mult = (double)params.msdf_height / params.render_height;
@@ -861,16 +765,13 @@ int render(render_params params, uint32_t** out, size_t* out_size) {
             if (params.anti_aliasing) {
                 double dist = median - 127.5;
                 double color = (dist + 1.0) * 127.5;
-                color = color < 0 ? 0 : color;
-                color = color > 255.0 ? 255.0 : color;
-                pixels[x + y * params.render_width] = color;
+                pixels[x + y * params.render_width] = clamp(color, 0.0, 255.0);
             } else {
                 pixels[x + y * params.render_width] = median > 127.5 ? 255 : 0;
             }
         }
     }
-    *out = pixels;
-    return 0;
+    return params.render_width * params.render_height * sizeof(uint32_t);
 }
 
 #define BMP_HEADER_SIZE 54
@@ -996,7 +897,7 @@ cleanup:
     return err;
 }
 
-int prog_generate(FT_Library ft_library, decompose_params params, bool verbose) {
+static int prog_generate(FT_Library ft_library, decompose_params params, bool verbose) {
     decompose_result result;
     raster_rec rec;
     int err = decompose(ft_library, params, &result, &rec);
@@ -1038,7 +939,7 @@ cleanup_edges:
     return err;
 }
 
-int prog_edges(FT_Library ft_library, decompose_params params) {
+static int prog_edges(FT_Library ft_library, decompose_params params) {
     decompose_result result;
     raster_rec rec;
     int err = decompose(ft_library, params, &result, &rec);
@@ -1071,7 +972,7 @@ cleanup_edges:
     return err;
 }
 
-int prog_render(size_t render_width, size_t render_height) {
+static int prog_render(size_t render_width, size_t render_height) {
     uint8_t* bmp_data;
     size_t bmp_data_size;
     int err = read_file("out.bmp", (void**)&bmp_data, &bmp_data_size);
@@ -1085,21 +986,20 @@ int prog_render(size_t render_width, size_t render_height) {
         printf("failed to parse bmp: %d\n", err);
         goto cleanup;
     }
-    uint32_t* rendered;
-    size_t rendered_size;
     render_params render_params = {
         .msdf = raster_params.data,
         .msdf_height = raster_params.height,
         .msdf_width = raster_params.width,
         .render_width = render_width,
         .render_height = render_height,
-        .anti_aliasing = false,
+        .anti_aliasing = true,
     };
-    err = render(render_params, &rendered, &rendered_size);
-    if (err) {
+    uint32_t* rendered = malloc(render(render_params, NULL));
+    if (!rendered) {
         printf("failed to render: %d\n", err);
         goto cleanup;
     }
+    render(render_params, rendered);
 
     bmp_params render_bmp_params = {.data = rendered, .width = render_width, .height = render_height};
     uint8_t* buf = malloc(bmp_write(render_bmp_params, NULL));
@@ -1129,7 +1029,7 @@ typedef struct {
     bool verbose;
 } prog_args;
 
-int parse_args(int argc, char* argv[], prog_args* args) {
+static int parse_args(int argc, char* argv[], prog_args* args) {
     args->mode = NULL;
     args->width = 32;
     args->height = 32;
