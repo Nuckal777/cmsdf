@@ -20,6 +20,7 @@
 #define ERR_FILE_IO -1340
 #define ERR_INVALID_ARGS -1341
 #define ERR_INVALID_BMP -1342
+#define ERR_INVALID_UTF8 -1343
 
 typedef struct {
     double x;
@@ -898,6 +899,9 @@ cleanup:
 }
 
 static int prog_generate(FT_Library ft_library, decompose_params params, bool verbose) {
+    if (verbose) {
+        printf("codepoint: %lx\n", params.character);
+    }
     decompose_result result;
     raster_rec rec;
     int err = decompose(ft_library, params, &result, &rec);
@@ -1025,7 +1029,7 @@ typedef struct {
     const char* font;
     long width;
     long height;
-    unsigned long character;
+    const char* character;
     bool verbose;
 } prog_args;
 
@@ -1033,7 +1037,7 @@ static int parse_args(int argc, char* argv[], prog_args* args) {
     args->mode = NULL;
     args->width = 32;
     args->height = 32;
-    args->character = 'A';
+    args->character = "A";
     args->font = "/usr/share/fonts/liberation/LiberationMono-Regular.ttf";
     args->verbose = false;
     if (argc < 2) {
@@ -1066,7 +1070,7 @@ static int parse_args(int argc, char* argv[], prog_args* args) {
             if (i >= argc) {
                 return ERR_INVALID_ARGS;
             }
-            args->character = argv[i + 1][0];
+            args->character = argv[i + 1];
             i++;
         } else if (strcmp(current, "-f") == 0) {
             if (i >= argc) {
@@ -1083,6 +1087,135 @@ static int parse_args(int argc, char* argv[], prog_args* args) {
     return 0;
 }
 
+typedef struct {
+    uint32_t* data;
+    size_t len;
+    size_t cap;
+} u32buf;
+
+#define U32_BUF_EMPTY ((u32buf){.data = NULL, .cap = 0, .len = 0})
+
+int u32buf_append(u32buf* buf, uint32_t v) {
+    if (!buf->data) {
+        buf->cap = 32;
+        buf->data = malloc(buf->cap * sizeof(uint32_t));
+        if (!buf->data) {
+            return ERR_OOM;
+        }
+        buf->data[0] = v;
+        buf->len = 1;
+        return 0;
+    }
+    if (buf->len >= buf->cap) {
+        size_t new_cap = buf->cap * 3 / 2;
+        uint32_t* tmp = realloc(buf->data, new_cap * sizeof(uint32_t));
+        if (!tmp) {
+            return ERR_OOM;
+        }
+        buf->cap = new_cap;
+        buf->data = tmp;
+    }
+    buf->data[buf->len] = v;
+    buf->len++;
+    return 0;
+}
+
+int codepoints_from_utf8(uint32_t** out, size_t* out_len, const char* in, size_t in_len) {
+    int err = 0;
+    *out = NULL;
+    *out_len = 0;
+    u32buf buf = U32_BUF_EMPTY;
+    for (size_t i = 0; i < in_len; i++) {
+        unsigned char current = in[i];
+        if (0xf0 == (0xf8 & current)) {  // 4 byte
+            if (i + 3 >= in_len) {
+                err = ERR_INVALID_UTF8;
+                goto cleanup;
+            }
+            unsigned char n1 = in[++i];
+            unsigned char n2 = in[++i];
+            unsigned char n3 = in[++i];
+            if (0x80 != (0xc0 & n1) || 0x80 != (0xc0 & n2) || 0x80 != (0xc0 & n3)) {  // not continuation bytes
+                err = ERR_INVALID_UTF8;
+                goto cleanup;
+            }
+            uint32_t cp = ((current & 0x07) << 18) | ((n1 & 0x3f) << 12) | ((n2 & 0x3f) << 6) | (n3 & 0x3f);
+            if (cp < 0x10000) {  // overlong encoding
+                err = ERR_INVALID_UTF8;
+                goto cleanup;
+            }
+            err = u32buf_append(&buf, cp);
+            if (err) {
+                goto cleanup;
+            }
+            continue;
+        }
+        if (0xe0 == (0xf0 & current)) {  // 3 byte
+            if (i + 2 >= in_len) {
+                err = ERR_INVALID_UTF8;
+                goto cleanup;
+            }
+            unsigned char n1 = in[++i];
+            unsigned char n2 = in[++i];
+            if (0x80 != (0xc0 & n1) || 0x80 != (0xc0 & n2)) {  // not continuation bytes
+                err = ERR_INVALID_UTF8;
+                goto cleanup;
+            }
+            uint32_t cp = ((current & 0x0f) << 12) | ((n1 & 0x3f) << 6) | (n2 & 0x3f);
+            if (cp < 0x800) {  // overlong encoding
+                err = ERR_INVALID_UTF8;
+                goto cleanup;
+            }
+            if (0xd800 <= cp && cp <= 0xdfff) {  // surrogate pair
+                err = ERR_INVALID_UTF8;
+                goto cleanup;
+            }
+            err = u32buf_append(&buf, cp);
+            if (err) {
+                goto cleanup;
+            }
+            continue;
+        }
+        if (0xc0 == (0xe0 & current)) {  // 2 byte
+            if (i + 1 >= in_len) {
+                err = ERR_INVALID_UTF8;
+                goto cleanup;
+            }
+            unsigned char next = in[++i];
+            if (0x80 != (0xc0 & next)) {  // not continuation byte
+                err = ERR_INVALID_UTF8;
+                goto cleanup;
+            }
+            uint32_t cp = ((current & 0x1f) << 6) | (next & 0x3f);
+            if (cp < 0x80) {  // overlong encoding
+                err = ERR_INVALID_UTF8;
+                goto cleanup;
+            }
+            err = u32buf_append(&buf, cp);
+            if (err) {
+                goto cleanup;
+            }
+            continue;
+        }
+        if (0x00 == (0x80 & current)) {  // 1 byte
+            err = u32buf_append(&buf, current);
+            if (err) {
+                goto cleanup;
+            }
+            continue;
+        }
+        err = ERR_INVALID_UTF8;
+        goto cleanup;
+    }
+    *out = buf.data;
+    *out_len = buf.len;
+cleanup:
+    if (err) {
+        free(buf.data);
+    }
+    return err;
+}
+
 int main(int argc, char* argv[]) {
     prog_args args;
     int err = parse_args(argc, argv, &args);
@@ -1094,14 +1227,28 @@ int main(int argc, char* argv[]) {
         err = prog_render(args.width, args.height);
         return err ? EXIT_FAILURE : EXIT_SUCCESS;
     }
+
     FT_Library ft_library;
     if (FT_Init_FreeType(&ft_library)) {
         printf("failed to init freetype: %d\n", err);
         return EXIT_FAILURE;
     }
+
+    uint32_t* out = NULL;
+    size_t out_len;
+    err = codepoints_from_utf8(&out, &out_len, args.character, strlen(args.character));
+    if (err) {
+        fprintf(stderr, "failed to decode utf-8\n");
+        goto cleanup;
+    }
+    if (out_len == 0) {
+        fprintf(stderr, "no characters provided\n");
+        err = ERR_INVALID_UTF8;
+        goto cleanup;
+    }
     decompose_params params = {
         .fontpath = args.font,
-        .character = args.character,
+        .character = out[0],
         .pixel_width = args.width,
         .pixel_height = args.height,
     };
@@ -1113,6 +1260,8 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "unknown mode\n");
         err = ERR_INVALID_ARGS;
     }
+cleanup:
+    free(out);
     if (FT_Done_FreeType(ft_library)) {
         printf("failed to deinit freetype: %d\n", err);
     }
