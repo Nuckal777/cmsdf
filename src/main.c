@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <errno.h>
+#define _USE_MATH_DEFINES
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -1140,7 +1141,7 @@ int codepoints_from_utf8(uint32_t** out, size_t* out_len, const char* in, size_t
                 goto cleanup;
             }
             uint32_t cp = ((current & 0x07) << 18) | ((n1 & 0x3f) << 12) | ((n2 & 0x3f) << 6) | (n3 & 0x3f);
-            if (cp < 0x10000) {  // overlong encoding
+            if (cp < 0x10000 || cp > 0x10ffff) {  // overlong encoding or too large
                 err = ERR_INVALID_UTF8;
                 goto cleanup;
             }
@@ -1216,7 +1217,7 @@ cleanup:
     return err;
 }
 
-int main(int argc, char* argv[]) {
+int main_internal(int argc, char* argv[]) {
     prog_args args;
     int err = parse_args(argc, argv, &args);
     if (err) {
@@ -1267,3 +1268,58 @@ cleanup:
     }
     return err ? EXIT_FAILURE : EXIT_SUCCESS;
 }
+
+#if defined(_WIN32) || defined(_WIN64)
+
+#include <windows.h>
+
+static char* wide_to_utf8(wchar_t* wstr) {
+    if (!wstr) {
+        return NULL;
+    }
+    int out_size = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, NULL, 0, NULL, NULL);
+    if (out_size <= 0) {
+        return NULL;
+    }
+    char* out = malloc(out_size);
+    if (!out) {
+        return NULL;
+    }
+    int written = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, out, out_size, NULL, NULL);
+    if (written <= 0) {
+        free(out);
+        return NULL;
+    }
+    return out;
+}
+
+int wmain(int wargc, wchar_t* wargv[]) {
+    char** argv = malloc(wargc * sizeof(char*));
+    if (!argv) {
+        return EXIT_FAILURE;
+    }
+    int result = EXIT_FAILURE;
+    int argc = 0;
+    for (int i = 0; i < wargc; i++) {
+        argv[i] = wide_to_utf8(wargv[i]);
+        if (!argv[i]) {
+            goto cleanup;
+        }
+        argc++;
+    }
+    result = main_internal(argc, argv);
+cleanup:
+    for (int i = 0; i < argc; i++) {
+        free(argv[i]);
+    }
+    free(argv);
+    return result;
+}
+
+#else
+
+int main(int argc, char* argv[]) {
+    return main_internal(argc, argv);
+}
+
+#endif

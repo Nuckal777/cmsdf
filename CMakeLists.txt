@@ -8,4 +8,7 @@ find_package(Freetype REQUIRED)
 
 add_executable(cmsdf src/main.c)
 target_include_directories(cmsdf PRIVATE ${FREETYPE_INCLUDE_DIRS})
-target_link_libraries(cmsdf PRIVATE m ${FREETYPE_LIBRARIES})
+target_link_libraries(cmsdf PRIVATE ${FREETYPE_LIBRARIES})
+if (NOT WIN32)
+    target_link_libraries(cmsdf PRIVATE m)
+endif()
