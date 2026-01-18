@@ -469,26 +469,19 @@ typedef struct {
     size_t height;
 } raster_rec;
 
-int decompose(FT_Library ft_library, decompose_params params, decompose_result* result, raster_rec* rec) {
-    FT_Face face;
-    FT_Error err = FT_New_Face(ft_library, params.fontpath, 0, &face);
+int decompose(FT_Face ft_face, decompose_params params, decompose_result* result, raster_rec* rec) {
+    FT_UInt idx = FT_Get_Char_Index(ft_face, params.character);
+    if (!idx) {
+        return ERR_FACE_MISSING_GLYPH;
+    }
+    FT_Error err = FT_Load_Glyph(ft_face, idx, FT_LOAD_NO_SCALE);
     if (err) {
         return err;
     }
-    FT_UInt idx = FT_Get_Char_Index(face, params.character);
-    if (!idx) {
-        err = ERR_FACE_MISSING_GLYPH;
-        goto cleanup;
+    if (ft_face->glyph->format != FT_GLYPH_FORMAT_OUTLINE) {
+        return ERR_FACE_NO_OUTLINE;
     }
-    err = FT_Load_Glyph(face, idx, FT_LOAD_NO_SCALE);
-    if (err) {
-        goto cleanup;
-    }
-    if (face->glyph->format != FT_GLYPH_FORMAT_OUTLINE) {
-        err = ERR_FACE_NO_OUTLINE;
-        goto cleanup;
-    }
-    FT_Outline* outline = &face->glyph->outline;
+    FT_Outline* outline = &ft_face->glyph->outline;
     FT_Outline_Funcs funcs = {
         .move_to = decompose_move_to,
         .line_to = decompose_line_to,
@@ -501,21 +494,15 @@ int decompose(FT_Library ft_library, decompose_params params, decompose_result* 
     ctx.contour_idx.len = 0;
     err = edge_array_new(&ctx.edges);
     if (err) {
-        goto cleanup;
+        return err;
     }
     err = FT_Outline_Decompose(outline, &funcs, &ctx);
     if (err) {
-        goto cleanup_edges;
+        goto cleanup;
     }
     result->edges = ctx.edges;
     result->contour_idx = ctx.contour_idx;
 
-    FT_Glyph glyph;
-    err = FT_Get_Glyph(face->glyph, &glyph);
-    if (err) {
-        goto cleanup_edges;
-    }
-    FT_Done_Glyph(glyph);
     *rec = (raster_rec){.width = params.pixel_width, .height = params.pixel_height};
 
     edge_array_fit_to_grid(result->edges, (vec2){.x = params.pixel_width, .y = params.pixel_height});
@@ -542,13 +529,10 @@ int decompose(FT_Library ft_library, decompose_params params, decompose_result* 
             }
         }
     }
-
-cleanup_edges:
+cleanup:
     if (err) {
         free(ctx.edges.data);
     }
-cleanup:
-    FT_Done_Face(face);
     return err;
 }
 
@@ -899,13 +883,13 @@ cleanup:
     return err;
 }
 
-static int prog_generate(FT_Library ft_library, decompose_params params, bool verbose) {
+static int prog_generate(FT_Face ft_face, decompose_params params, bool verbose) {
     if (verbose) {
         printf("codepoint: %lx\n", params.character);
     }
     decompose_result result;
     raster_rec rec;
-    int err = decompose(ft_library, params, &result, &rec);
+    int err = decompose(ft_face, params, &result, &rec);
     if (err) {
         printf("failed to decompose freetype: %d\n", err);
         return err;
@@ -944,10 +928,10 @@ cleanup_edges:
     return err;
 }
 
-static int prog_edges(FT_Library ft_library, decompose_params params) {
+static int prog_edges(FT_Face ft_face, decompose_params params) {
     decompose_result result;
     raster_rec rec;
-    int err = decompose(ft_library, params, &result, &rec);
+    int err = decompose(ft_face, params, &result, &rec);
     if (err) {
         return err;
     }
@@ -1247,6 +1231,13 @@ int main_internal(int argc, char* argv[]) {
         err = ERR_INVALID_UTF8;
         goto cleanup;
     }
+    FT_Face ft_face;
+    err = FT_New_Face(ft_library, args.font, 0, &ft_face);
+    if (err) {
+        fprintf(stderr, "failed to load font face from %s\n", args.font);
+        err = ERR_FILE_IO;
+        goto cleanup;
+    }
     decompose_params params = {
         .fontpath = args.font,
         .character = out[0],
@@ -1254,13 +1245,14 @@ int main_internal(int argc, char* argv[]) {
         .pixel_height = args.height,
     };
     if (strcmp(args.mode, "generate") == 0) {
-        err = prog_generate(ft_library, params, args.verbose);
+        err = prog_generate(ft_face, params, args.verbose);
     } else if (strcmp(args.mode, "edges") == 0) {
-        err = prog_edges(ft_library, params);
+        err = prog_edges(ft_face, params);
     } else {
         fprintf(stderr, "unknown mode\n");
         err = ERR_INVALID_ARGS;
     }
+    FT_Done_Face(ft_face);
 cleanup:
     free(out);
     if (FT_Done_FreeType(ft_library)) {
