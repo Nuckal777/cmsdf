@@ -10,7 +10,6 @@
 #include <string.h>
 
 #include "freetype/freetype.h"
-#include "freetype/ftglyph.h"
 #include "freetype/ftimage.h"
 #include "freetype/ftoutln.h"
 #include "freetype/fttypes.h"
@@ -635,35 +634,17 @@ static bool causes_defect(uint32_t target, uint32_t neighbour) {
 // not interfere with further checks.
 // Technically the top-right neighbour could also be checked, but from a few tests
 // that did more harm than help.
-static void postprocess(uint32_t* pixels, size_t width, size_t height, bool verbose) {
-    size_t issue_count = 0;
+static void postprocess(uint32_t* pixels, size_t width, size_t height) {
     for (size_t y = 0; y < height - 1; y++) {
         for (size_t x = 0; x < width - 1; x++) {
             size_t check = x + y * width;
             size_t right = check + 1;
             size_t up = check + width;
-            size_t count = 0;
-            if (causes_defect(pixels[check], pixels[right])) {
-                if (verbose) {
-                    printf("(%zu,%zu) could create an artifact with it's right neighbour\n", x, y);
-                }
-                count++;
-            }
-            if (causes_defect(pixels[check], pixels[up])) {
-                if (verbose) {
-                    printf("(%zu,%zu) could create an artifact with it's upper neighbour\n", x, y);
-                }
-                count++;
-            }
-            if (count > 0) {
-                issue_count++;
+            if (causes_defect(pixels[check], pixels[right]) || causes_defect(pixels[check], pixels[up])) {
                 uint8_t median = median3u(get_channel(pixels[check], 0), get_channel(pixels[check], 8), get_channel(pixels[check], 16));
                 pixels[check] = median | median << 8 | median << 16;
             }
         }
-    }
-    if (verbose) {
-        printf("issue count %zu\n", issue_count);
     }
 }
 
@@ -908,7 +889,7 @@ static int prog_generate(FT_Face ft_face, decompose_params params, bool verbose)
         goto cleanup_edges;
     }
     raster_edges(result.edges, rec, raster);
-    postprocess(raster, rec.width, rec.height, verbose);
+    postprocess(raster, rec.width, rec.height);
     bmp_params raster_bmp_params = {.data = raster, .width = rec.width, .height = rec.height};
     uint8_t* buf = malloc(bmp_write(raster_bmp_params, NULL));
     if (!buf) {
