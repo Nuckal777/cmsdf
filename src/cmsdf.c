@@ -60,7 +60,7 @@ static vec2 vec2_normalize(vec2 a) {
 #define EDGE_COLOR_YELLOW (255 << 8 | 255 << 16)
 #define EDGE_COLOR_WHITE (255 | 255 << 8 | 255 << 16)
 
-struct edge {
+struct cmsdf_edge {
     vec2 start;
     vec2 end;
     vec2 control1;
@@ -68,7 +68,7 @@ struct edge {
     uint32_t color;
 };
 
-static uint8_t edge_type(edge* e) {
+static uint8_t cmsdf_edge_type(cmsdf_edge* e) {
     if (!isnan(e->control2.x)) {
         return EDGE_TY_CUBIC;
     }
@@ -78,8 +78,8 @@ static uint8_t edge_type(edge* e) {
     return EDGE_TY_LINE;
 }
 
-static edge make_line(vec2 start, vec2 end) {
-    return (edge){
+static cmsdf_edge make_line(vec2 start, vec2 end) {
+    return (cmsdf_edge){
         .start = start,
         .end = end,
         .control1 = (vec2){.x = NAN, .y = NAN},
@@ -88,8 +88,8 @@ static edge make_line(vec2 start, vec2 end) {
     };
 }
 
-static edge make_conic(vec2 start, vec2 end, vec2 control1) {
-    return (edge){
+static cmsdf_edge make_conic(vec2 start, vec2 end, vec2 control1) {
+    return (cmsdf_edge){
         .start = start,
         .end = end,
         .control1 = control1,
@@ -98,8 +98,8 @@ static edge make_conic(vec2 start, vec2 end, vec2 control1) {
     };
 }
 
-static edge make_cubic(vec2 start, vec2 end, vec2 control1, vec2 control2) {
-    return (edge){
+static cmsdf_edge make_cubic(vec2 start, vec2 end, vec2 control1, vec2 control2) {
+    return (cmsdf_edge){
         .start = start,
         .end = end,
         .control1 = control1,
@@ -108,8 +108,8 @@ static edge make_cubic(vec2 start, vec2 end, vec2 control1, vec2 control2) {
     };
 }
 
-static vec2 edge_at(edge* e, double t) {
-    uint8_t ty = edge_type(e);
+static vec2 cmsdf_edge_at(cmsdf_edge* e, double t) {
+    uint8_t ty = cmsdf_edge_type(e);
     switch (ty) {
         case EDGE_TY_LINE:
             return vec2_add(e->start, vec2_mult(vec2_sub(e->end, e->start), splat2(t)));
@@ -134,8 +134,8 @@ static vec2 edge_at(edge* e, double t) {
     return (vec2){};
 }
 
-static vec2 edge_dir(edge* e, double t) {
-    uint8_t ty = edge_type(e);
+static vec2 cmsdf_edge_dir(cmsdf_edge* e, double t) {
+    uint8_t ty = cmsdf_edge_type(e);
     switch (ty) {
         case EDGE_TY_LINE:
             return vec2_sub(e->end, e->start);
@@ -205,15 +205,15 @@ static size_t solveCubic(double coeff[4], double* out) {
     return 3;
 }
 
-static double min_dist_sq(edge* e, double t, vec2 point) {
-    vec2 on_curve = edge_at(e, t);
-    vec2 tangent = edge_dir(e, t);
+static double min_dist_sq(cmsdf_edge* e, double t, vec2 point) {
+    vec2 on_curve = cmsdf_edge_at(e, t);
+    vec2 tangent = cmsdf_edge_dir(e, t);
     vec2 to_point = vec2_sub(on_curve, point);
     return 2 * vec2_dot(to_point, tangent);
 }
 
-static double edge_arg_min_dist(edge* e, vec2 point) {
-    uint8_t ty = edge_type(e);
+static double cmsdf_edge_arg_min_dist(cmsdf_edge* e, vec2 point) {
+    uint8_t ty = cmsdf_edge_type(e);
     switch (ty) {
         case EDGE_TY_LINE: {
             vec2 dir = vec2_sub(e->end, e->start);
@@ -248,7 +248,7 @@ static double edge_arg_min_dist(edge* e, vec2 point) {
                 if (isnan(t) || t < 0.0 || t > 1.0) {
                     continue;
                 }
-                vec2 on_curve = edge_at(e, t);
+                vec2 on_curve = cmsdf_edge_at(e, t);
                 double dist = vec2_dist(on_curve, point);
                 if (dist < min_dist) {
                     min_dist = dist;
@@ -285,7 +285,7 @@ static double edge_arg_min_dist(edge* e, vec2 point) {
                 if (x1 < 0 || x1 > 1) {
                     continue;
                 }
-                double d = vec2_dist(edge_at(e, x1), point);
+                double d = vec2_dist(cmsdf_edge_at(e, x1), point);
                 if (d < min_dist) {
                     min_dist = d;
                     t = x1;
@@ -320,12 +320,12 @@ static edge_point_stats edge_point_stats_min(edge_point_stats a, edge_point_stat
     return a.orthogonality > b.orthogonality ? a : b;
 }
 
-static edge_point_stats edge_dist_ortho(edge* e, vec2 point) {
-    double arg_min = edge_arg_min_dist(e, point);
-    vec2 at = edge_at(e, arg_min);
+static edge_point_stats cmsdf_edge_dist_ortho(cmsdf_edge* e, vec2 point) {
+    double arg_min = cmsdf_edge_arg_min_dist(e, point);
+    vec2 at = cmsdf_edge_at(e, arg_min);
     double dist = vec2_dist(at, point);
 
-    vec2 dir = edge_dir(e, arg_min);
+    vec2 dir = cmsdf_edge_dir(e, arg_min);
     vec2 diff = vec2_sub(point, at);
     double ortho = fabs(vec2_cross(vec2_normalize(dir), vec2_normalize(diff)));
     double sign = vec2_cross(dir, vec2_sub(at, point));
@@ -335,23 +335,23 @@ static edge_point_stats edge_dist_ortho(edge* e, vec2 point) {
 
 #define EDGE_ARRAY_DEFAULT_CAP 16
 
-static int edge_array_new(edge_array* arr) {
-    arr->data = malloc(sizeof(edge) * EDGE_ARRAY_DEFAULT_CAP);
+static int cmsdf_edge_array_new(cmsdf_edge_array* arr) {
+    arr->data = malloc(sizeof(cmsdf_edge) * EDGE_ARRAY_DEFAULT_CAP);
     if (!arr->data) {
-        return ERR_OOM;
+        return CMSDF_ERR_OOM;
     }
     arr->cap = EDGE_ARRAY_DEFAULT_CAP;
     arr->len = 0;
     return 0;
 }
 
-static int edge_array_push(edge_array* arr, edge e) {
+static int cmsdf_edge_array_push(cmsdf_edge_array* arr, cmsdf_edge e) {
     if (arr->len == arr->cap - 1) {
         size_t new_cap = arr->cap * 3 / 2;
-        edge* tmp = realloc(arr->data, sizeof(edge) * new_cap);
+        cmsdf_edge* tmp = realloc(arr->data, sizeof(cmsdf_edge) * new_cap);
         if (!tmp) {
             free(arr->data);
-            return ERR_OOM;
+            return CMSDF_ERR_OOM;
         }
         arr->data = tmp;
         arr->cap = new_cap;
@@ -361,9 +361,9 @@ static int edge_array_push(edge_array* arr, edge e) {
     return 0;
 }
 
-void edge_array_print(edge_array arr) {
+void cmsdf_edge_array_print(cmsdf_edge_array arr) {
     for (size_t i = 0; i < arr.len; i++) {
-        edge* current = arr.data + i;
+        cmsdf_edge* current = arr.data + i;
         printf("start: (%g, %g) end: (%g, %g)\n", current->start.x, current->start.y, current->end.x, current->end.y);
     }
 }
@@ -375,7 +375,7 @@ static void vec2_min_max(vec2 p, vec2* min, vec2* max) {
     max->y = p.y > max->y ? p.y : max->y;
 }
 
-static void edge_array_fit_to_grid(edge_array edges, vec2 dim) {
+static void cmsdf_edge_array_fit_to_grid(cmsdf_edge_array edges, vec2 dim) {
     vec2 min = {.x = INFINITY, .y = INFINITY};
     vec2 max = {.x = -INFINITY, .y = -INFINITY};
     for (size_t i = 0; i < edges.len; i++) {
@@ -385,7 +385,7 @@ static void edge_array_fit_to_grid(edge_array edges, vec2 dim) {
     vec2 len = vec2_sub(max, min);
     vec2 scale = {.x = (dim.x - 2) / len.x, .y = (dim.y - 2) / len.y};
     for (size_t i = 0; i < edges.len; i++) {
-        edge* e = edges.data + i;
+        cmsdf_edge* e = edges.data + i;
         e->start = vec2_add(vec2_mult(vec2_sub(e->start, min), scale), splat2(1));
         e->end = vec2_add(vec2_mult(vec2_sub(e->end, min), scale), splat2(1));
         e->control1 = vec2_add(vec2_mult(vec2_sub(e->control1, min), scale), splat2(1));
@@ -395,8 +395,8 @@ static void edge_array_fit_to_grid(edge_array edges, vec2 dim) {
 
 typedef struct {
     vec2 start;
-    edge_array edges;
-    contour_index contour_idx;
+    cmsdf_edge_array edges;
+    cmsdf_contour_index contour_idx;
 } decompose_ctx;
 
 static vec2 from_ft_vec(FT_Vector v) {
@@ -406,8 +406,8 @@ static vec2 from_ft_vec(FT_Vector v) {
 static int decompose_move_to(const FT_Vector* to, void* user) {
     decompose_ctx* ctx = (decompose_ctx*)user;
     ctx->start = from_ft_vec(*to);
-    if (ctx->contour_idx.len == CONTOUR_INDEX_CAP - 1) {
-        return ERR_OOM;
+    if (ctx->contour_idx.len == CMSDF_CONTOUR_INDEX_CAP - 1) {
+        return CMSDF_ERR_OOM;
     }
     ctx->contour_idx.offsets[ctx->contour_idx.len] = ctx->edges.len;
     ctx->contour_idx.len++;
@@ -416,38 +416,38 @@ static int decompose_move_to(const FT_Vector* to, void* user) {
 
 static int decompose_line_to(const FT_Vector* to, void* user) {
     decompose_ctx* ctx = (decompose_ctx*)user;
-    int err = edge_array_push(&ctx->edges, make_line(ctx->start, from_ft_vec(*to)));
+    int err = cmsdf_edge_array_push(&ctx->edges, make_line(ctx->start, from_ft_vec(*to)));
     ctx->start = from_ft_vec(*to);
     return err;
 }
 
 static int decompose_conic_to(const FT_Vector* control, const FT_Vector* to, void* user) {
     decompose_ctx* ctx = (decompose_ctx*)user;
-    int err = edge_array_push(&ctx->edges, make_conic(ctx->start, from_ft_vec(*to), from_ft_vec(*control)));
+    int err = cmsdf_edge_array_push(&ctx->edges, make_conic(ctx->start, from_ft_vec(*to), from_ft_vec(*control)));
     ctx->start = from_ft_vec(*to);
     return err;
 }
 
 static int decompose_cubic_to(const FT_Vector* control1, const FT_Vector* control2, const FT_Vector* to, void* user) {
     decompose_ctx* ctx = (decompose_ctx*)user;
-    int err = edge_array_push(&ctx->edges, make_cubic(ctx->start, from_ft_vec(*to), from_ft_vec(*control1), from_ft_vec(*control2)));
+    int err = cmsdf_edge_array_push(&ctx->edges, make_cubic(ctx->start, from_ft_vec(*to), from_ft_vec(*control1), from_ft_vec(*control2)));
     ctx->start = from_ft_vec(*to);
     return err;
 }
 
-int decompose(FT_Face ft_face, decompose_params params, decompose_result* result, raster_rec* rec) {
-    FT_UInt idx = FT_Get_Char_Index(ft_face, params.character);
+int cmsdf_decompose(cmsdf_decompose_params params, cmsdf_decompose_result* result) {
+    FT_UInt idx = FT_Get_Char_Index(params.face, params.character);
     if (!idx) {
-        return ERR_FACE_MISSING_GLYPH;
+        return CMSDF_ERR_FACE_MISSING_GLYPH;
     }
-    FT_Error err = FT_Load_Glyph(ft_face, idx, FT_LOAD_NO_SCALE);
+    FT_Error err = FT_Load_Glyph(params.face, idx, FT_LOAD_NO_SCALE);
     if (err) {
         return err;
     }
-    if (ft_face->glyph->format != FT_GLYPH_FORMAT_OUTLINE) {
-        return ERR_FACE_NO_OUTLINE;
+    if (params.face->glyph->format != FT_GLYPH_FORMAT_OUTLINE) {
+        return CMSDF_ERR_FACE_NO_OUTLINE;
     }
-    FT_Outline* outline = &ft_face->glyph->outline;
+    FT_Outline* outline = &params.face->glyph->outline;
     FT_Outline_Funcs funcs = {
         .move_to = decompose_move_to,
         .line_to = decompose_line_to,
@@ -458,7 +458,7 @@ int decompose(FT_Face ft_face, decompose_params params, decompose_result* result
     };
     decompose_ctx ctx;
     ctx.contour_idx.len = 0;
-    err = edge_array_new(&ctx.edges);
+    err = cmsdf_edge_array_new(&ctx.edges);
     if (err) {
         return err;
     }
@@ -469,12 +469,12 @@ int decompose(FT_Face ft_face, decompose_params params, decompose_result* result
     result->edges = ctx.edges;
     result->contour_idx = ctx.contour_idx;
 
-    *rec = (raster_rec){.width = params.pixel_width, .height = params.pixel_height};
+    result->rec = (cmsdf_rec){.width = params.pixel_width, .height = params.pixel_height};
 
-    edge_array_fit_to_grid(result->edges, (vec2){.x = params.pixel_width, .y = params.pixel_height});
+    cmsdf_edge_array_fit_to_grid(result->edges, (vec2){.x = params.pixel_width, .y = params.pixel_height});
     for (size_t i = 0; i < result->contour_idx.len; i++) {
-        edge* start = result->edges.data + result->contour_idx.offsets[i];
-        edge* end = NULL;
+        cmsdf_edge* start = result->edges.data + result->contour_idx.offsets[i];
+        cmsdf_edge* end = NULL;
         if (i + 1 == result->contour_idx.len) {
             end = result->edges.data + result->edges.len;
         } else {
@@ -486,7 +486,7 @@ int decompose(FT_Face ft_face, decompose_params params, decompose_result* result
         }
         uint32_t color = EDGE_COLOR_MAGENTA;
         const uint32_t check = EDGE_COLOR_YELLOW;
-        for (edge* current = start; current != end; current++) {
+        for (cmsdf_edge* current = start; current != end; current++) {
             current->color = color;
             if (color == check) {
                 color = EDGE_COLOR_CYAN;
@@ -511,7 +511,7 @@ static double clamp(double a, double min, double max) {
     return a < min ? min : a;
 }
 
-size_t raster_edges(edge_array edges, raster_rec rec, uint32_t* pixels) {
+size_t cmsdf_raster_edges(cmsdf_edge_array edges, cmsdf_rec rec, uint32_t* pixels) {
     if (!pixels) {
         return rec.width * rec.height * sizeof(uint32_t);
     }
@@ -523,8 +523,8 @@ size_t raster_edges(edge_array edges, raster_rec rec, uint32_t* pixels) {
             edge_point_stats min_red = {.dist = max_dist};
             vec2 origin = (vec2){.x = x + 0.5, .y = y + 0.5};
             for (size_t i = 0; i < edges.len; i++) {
-                edge* current = edges.data + i;
-                edge_point_stats dist = edge_dist_ortho(current, origin);
+                cmsdf_edge* current = edges.data + i;
+                edge_point_stats dist = cmsdf_edge_dist_ortho(current, origin);
                 if ((current->color & 255) != 0 && edge_point_stats_eq(dist, edge_point_stats_min(dist, min_blue))) {
                     min_blue = dist;
                 }
@@ -601,7 +601,7 @@ static bool causes_defect(uint32_t target, uint32_t neighbour) {
 // not interfere with further checks.
 // Technically the top-right neighbour could also be checked, but from a few tests
 // that did more harm than help.
-void postprocess(uint32_t* pixels, size_t width, size_t height) {
+void cmsdf_postprocess(uint32_t* pixels, size_t width, size_t height) {
     for (size_t y = 0; y < height - 1; y++) {
         for (size_t x = 0; x < width - 1; x++) {
             size_t check = x + y * width;
@@ -615,18 +615,18 @@ void postprocess(uint32_t* pixels, size_t width, size_t height) {
     }
 }
 
-size_t draw_edges(edge_array edges, raster_rec rec, uint32_t* pixels) {
+size_t cmsdf_draw_edges(cmsdf_edge_array edges, cmsdf_rec rec, uint32_t* pixels) {
     if (!pixels) {
         return rec.width * rec.width * sizeof(uint32_t);
     }
     for (size_t y = 0; y < rec.height; y++) {
         for (size_t x = 0; x < rec.width; x++) {
-            edge* closet_edge;
+            cmsdf_edge* closet_edge;
             double min_dist = INFINITY;
             vec2 origin = (vec2){.x = x + 0.5, .y = y + 0.5};
             for (size_t i = 0; i < edges.len; i++) {
-                edge* current = edges.data + i;
-                edge_point_stats dist = edge_dist_ortho(current, origin);
+                cmsdf_edge* current = edges.data + i;
+                edge_point_stats dist = cmsdf_edge_dist_ortho(current, origin);
                 if (dist.dist < min_dist) {
                     min_dist = dist.dist;
                     closet_edge = current;
@@ -674,7 +674,7 @@ static double median3d(double a, double b, double c) {
     return b;
 }
 
-size_t render(render_params params, uint32_t* pixels) {
+size_t cmsdf_render(cmsdf_render_params params, uint32_t* pixels) {
     if (!pixels) {
         return params.render_width * params.render_height * sizeof(uint32_t);
     }

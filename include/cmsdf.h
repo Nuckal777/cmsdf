@@ -7,52 +7,49 @@
 
 #include "freetype/freetype.h"
 
-#define ERR_FACE_MISSING_GLYPH -1337
-#define ERR_FACE_NO_OUTLINE -1338
-#define ERR_OOM -1339
-#define ERR_FILE_IO -1340
-#define ERR_INVALID_ARGS -1341
-#define ERR_INVALID_BMP -1342
-#define ERR_INVALID_UTF8 -1343
+#define CMSDF_ERR_FACE_MISSING_GLYPH -1337
+#define CMSDF_ERR_FACE_NO_OUTLINE -1338
+#define CMSDF_ERR_OOM -1339
 
-typedef struct edge edge;
+typedef struct cmsdf_edge cmsdf_edge;
 
 typedef struct {
-    edge* data;
+    cmsdf_edge* data;
     size_t len;
     size_t cap;
-} edge_array;
+} cmsdf_edge_array;
 
-void edge_array_print(edge_array arr);
+void cmsdf_edge_array_print(cmsdf_edge_array arr);
 
 typedef struct {
-    const char* fontpath;
+    FT_Face face;
     FT_ULong character;
     FT_UInt pixel_width;
     FT_UInt pixel_height;
-} decompose_params;
+} cmsdf_decompose_params;
 
-#define CONTOUR_INDEX_CAP 15
+#define CMSDF_CONTOUR_INDEX_CAP 15
 
 typedef struct {
-    size_t offsets[CONTOUR_INDEX_CAP];
+    size_t offsets[CMSDF_CONTOUR_INDEX_CAP];
     size_t len;
-} contour_index;
-
-typedef struct {
-    edge_array edges;
-    contour_index contour_idx;
-} decompose_result;
+} cmsdf_contour_index;
 
 typedef struct {
     size_t width;
     size_t height;
-} raster_rec;
+} cmsdf_rec;
 
-int decompose(FT_Face ft_face, decompose_params params, decompose_result* result, raster_rec* rec);
-size_t raster_edges(edge_array edges, raster_rec rec, uint32_t* pixels);
-void postprocess(uint32_t* pixels, size_t width, size_t height);
-size_t draw_edges(edge_array edges, raster_rec rec, uint32_t* pixels);
+typedef struct {
+    cmsdf_edge_array edges;
+    cmsdf_rec rec;
+    cmsdf_contour_index contour_idx;
+} cmsdf_decompose_result;
+
+int cmsdf_decompose(cmsdf_decompose_params params, cmsdf_decompose_result* result);
+size_t cmsdf_raster_edges(cmsdf_edge_array edges, cmsdf_rec rec, uint32_t* pixels);
+void cmsdf_postprocess(uint32_t* pixels, size_t width, size_t height);
+size_t cmsdf_draw_edges(cmsdf_edge_array edges, cmsdf_rec rec, uint32_t* pixels);
 
 typedef struct {
     uint32_t* msdf;
@@ -61,8 +58,8 @@ typedef struct {
     size_t render_width;
     size_t render_height;
     bool anti_aliasing;
-} render_params;
+} cmsdf_render_params;
 
-size_t render(render_params params, uint32_t* pixels);
+size_t cmsdf_render(cmsdf_render_params params, uint32_t* pixels);
 
 #endif

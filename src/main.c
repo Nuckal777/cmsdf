@@ -1,7 +1,14 @@
 #include <errno.h>
 #include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "cmsdf.h"
+
+#define CMSDF_ERR_FILE_IO -1340
+#define CMSDF_ERR_INVALID_ARGS -1341
+#define CMSDF_ERR_INVALID_BMP -1342
+#define CMSDF_ERR_INVALID_UTF8 -1343
 
 #define BMP_HEADER_SIZE 54
 
@@ -44,30 +51,30 @@ int read_bmp(uint8_t* buf, size_t buf_size, bmp_params* out) {
     uint32_t pixel_offset;
     memcpy(&pixel_offset, buf + 10, sizeof(pixel_offset));
     if (pixel_offset != BMP_HEADER_SIZE) {
-        return ERR_INVALID_BMP;
+        return CMSDF_ERR_INVALID_BMP;
     }
     uint8_t* info_header = buf + 14;
     uint32_t info_header_size;
     memcpy(&info_header_size, info_header, sizeof(info_header_size));
     if (info_header_size != 40) {
-        return ERR_INVALID_BMP;
+        return CMSDF_ERR_INVALID_BMP;
     }
     memcpy(&out->width, info_header + 4, 4);
     memcpy(&out->height, info_header + 8, 4);
     if (out->width < 0 || out->height < 0) {  // Technically negative values are allowed to flip direction
-        return ERR_INVALID_BMP;
+        return CMSDF_ERR_INVALID_BMP;
     }
     if (buf_size < BMP_HEADER_SIZE + (size_t)out->width * (size_t)out->height) {
-        return ERR_INVALID_BMP;
+        return CMSDF_ERR_INVALID_BMP;
     }
     uint16_t val;
     memcpy(&val, info_header + 12, sizeof(val));
     if (val != 1) {
-        return ERR_INVALID_BMP;
+        return CMSDF_ERR_INVALID_BMP;
     }
     memcpy(&val, info_header + 14, sizeof(val));
     if (val != 32) {
-        return ERR_INVALID_BMP;
+        return CMSDF_ERR_INVALID_BMP;
     }
     out->data = (uint32_t*)(buf + BMP_HEADER_SIZE);
     return 0;
@@ -78,11 +85,11 @@ int write_file(const char* filename, void* buf, size_t buf_size) {
     FILE* f = fopen(filename, "wb");
     if (!f) {
         errno = 0;
-        return ERR_FILE_IO;
+        return CMSDF_ERR_FILE_IO;
     }
     unsigned long written = fwrite(buf, sizeof(uint8_t), buf_size, f);
     if (written != buf_size) {
-        err = ERR_FILE_IO;
+        err = CMSDF_ERR_FILE_IO;
     }
     fclose(f);
     return err;
@@ -93,30 +100,30 @@ int read_file(const char* filename, void** buf, size_t* buf_size) {
     FILE* f = fopen(filename, "rb");
     if (!f) {
         errno = 0;
-        return ERR_FILE_IO;
+        return CMSDF_ERR_FILE_IO;
     }
     err = fseek(f, 0, SEEK_END);
     if (err) {
         errno = 0;
-        err = ERR_FILE_IO;
+        err = CMSDF_ERR_FILE_IO;
         goto cleanup;
     }
     long size = ftell(f);
     if (size < 0) {
         errno = 0;
-        err = ERR_FILE_IO;
+        err = CMSDF_ERR_FILE_IO;
         goto cleanup;
     }
     rewind(f);
     *buf = malloc(size);
     if (!buf) {
-        err = ERR_OOM;
+        err = CMSDF_ERR_OOM;
         goto cleanup;
     }
     unsigned long read = fread(*buf, 1, size, f);
     if (read != (unsigned long)size) {
         errno = 0;
-        err = ERR_FILE_IO;
+        err = CMSDF_ERR_FILE_IO;
         goto cleanup_buf;
     }
     *buf_size = size;
@@ -129,33 +136,32 @@ cleanup:
     return err;
 }
 
-static int prog_generate(FT_Face ft_face, decompose_params params, bool verbose) {
+static int prog_generate(cmsdf_decompose_params params, bool verbose) {
     if (verbose) {
         printf("codepoint: %lx\n", params.character);
     }
-    decompose_result result;
-    raster_rec rec;
-    int err = decompose(ft_face, params, &result, &rec);
+    cmsdf_decompose_result result;
+    int err = cmsdf_decompose(params, &result);
     if (err) {
         printf("failed to decompose freetype: %d\n", err);
         return err;
     }
     if (verbose) {
-        printf("width: %zu, height: %zu\n", rec.width, rec.height);
+        printf("width: %zu, height: %zu\n", result.rec.width, result.rec.height);
         printf("contours: %zu, edge count: %zu\n", result.contour_idx.len, result.edges.len);
-        edge_array_print(result.edges);
+        cmsdf_edge_array_print(result.edges);
     }
-    uint32_t* raster = malloc(raster_edges(result.edges, rec, NULL));
+    uint32_t* raster = malloc(cmsdf_raster_edges(result.edges, result.rec, NULL));
     if (!raster) {
-        err = ERR_OOM;
+        err = CMSDF_ERR_OOM;
         goto cleanup_edges;
     }
-    raster_edges(result.edges, rec, raster);
-    postprocess(raster, rec.width, rec.height);
-    bmp_params raster_bmp_params = {.data = raster, .width = rec.width, .height = rec.height};
+    cmsdf_raster_edges(result.edges, result.rec, raster);
+    cmsdf_postprocess(raster, result.rec.width, result.rec.height);
+    bmp_params raster_bmp_params = {.data = raster, .width = result.rec.width, .height = result.rec.height};
     uint8_t* buf = malloc(bmp_write(raster_bmp_params, NULL));
     if (!buf) {
-        err = ERR_OOM;
+        err = CMSDF_ERR_OOM;
         goto cleanup_raster;
     }
     size_t bmp_size = bmp_write(raster_bmp_params, buf);
@@ -171,24 +177,23 @@ cleanup_edges:
     return err;
 }
 
-static int prog_edges(FT_Face ft_face, decompose_params params) {
-    decompose_result result;
-    raster_rec rec;
-    int err = decompose(ft_face, params, &result, &rec);
+static int prog_edges(cmsdf_decompose_params params) {
+    cmsdf_decompose_result result;
+    int err = cmsdf_decompose(params, &result);
     if (err) {
         return err;
     }
-    size_t pixels_size = draw_edges(result.edges, rec, NULL);
+    size_t pixels_size = cmsdf_draw_edges(result.edges, result.rec, NULL);
     uint32_t* pixels = malloc(pixels_size);
     if (!pixels) {
-        err = ERR_OOM;
+        err = CMSDF_ERR_OOM;
         goto cleanup_edges;
     }
-    draw_edges(result.edges, rec, pixels);
-    bmp_params edges_bmp_params = {.data = pixels, .width = rec.width, .height = rec.height};
+    cmsdf_draw_edges(result.edges, result.rec, pixels);
+    bmp_params edges_bmp_params = {.data = pixels, .width = result.rec.width, .height = result.rec.height};
     uint8_t* buf = malloc(bmp_write(edges_bmp_params, NULL));
     if (!buf) {
-        err = ERR_OOM;
+        err = CMSDF_ERR_OOM;
         goto cleanup_pixels;
     }
     size_t bmp_size = bmp_write(edges_bmp_params, buf);
@@ -218,7 +223,7 @@ static int prog_render(size_t render_width, size_t render_height) {
         printf("failed to parse bmp: %d\n", err);
         goto cleanup;
     }
-    render_params render_params = {
+    cmsdf_render_params render_params = {
         .msdf = raster_params.data,
         .msdf_height = raster_params.height,
         .msdf_width = raster_params.width,
@@ -226,17 +231,17 @@ static int prog_render(size_t render_width, size_t render_height) {
         .render_height = render_height,
         .anti_aliasing = true,
     };
-    uint32_t* rendered = malloc(render(render_params, NULL));
+    uint32_t* rendered = malloc(cmsdf_render(render_params, NULL));
     if (!rendered) {
         printf("failed to render: %d\n", err);
         goto cleanup;
     }
-    render(render_params, rendered);
+    cmsdf_render(render_params, rendered);
 
     bmp_params render_bmp_params = {.data = rendered, .width = render_width, .height = render_height};
     uint8_t* buf = malloc(bmp_write(render_bmp_params, NULL));
     if (!buf) {
-        err = ERR_OOM;
+        err = CMSDF_ERR_OOM;
         goto cleanup_rendered;
     }
     size_t bmp_size = bmp_write(render_bmp_params, buf);
@@ -269,47 +274,47 @@ static int parse_args(int argc, char* argv[], prog_args* args) {
     args->font = "/usr/share/fonts/liberation/LiberationMono-Regular.ttf";
     args->verbose = false;
     if (argc < 2) {
-        return ERR_INVALID_ARGS;
+        return CMSDF_ERR_INVALID_ARGS;
     }
     args->mode = argv[1];
     for (int i = 2; i < argc; i++) {
         const char* current = argv[i];
         if (strcmp(current, "-w") == 0) {
             if (i >= argc) {
-                return ERR_INVALID_ARGS;
+                return CMSDF_ERR_INVALID_ARGS;
             }
             args->width = strtol(argv[i + 1], NULL, 10);
             if (errno == ERANGE) {
                 errno = 0;
-                return ERR_INVALID_ARGS;
+                return CMSDF_ERR_INVALID_ARGS;
             }
             i++;
         } else if (strcmp(current, "-h") == 0) {
             if (i >= argc) {
-                return ERR_INVALID_ARGS;
+                return CMSDF_ERR_INVALID_ARGS;
             }
             args->height = strtol(argv[i + 1], NULL, 10);
             if (errno == ERANGE) {
                 errno = 0;
-                return ERR_INVALID_ARGS;
+                return CMSDF_ERR_INVALID_ARGS;
             }
             i++;
         } else if (strcmp(current, "-c") == 0) {
             if (i >= argc) {
-                return ERR_INVALID_ARGS;
+                return CMSDF_ERR_INVALID_ARGS;
             }
             args->character = argv[i + 1];
             i++;
         } else if (strcmp(current, "-f") == 0) {
             if (i >= argc) {
-                return ERR_INVALID_ARGS;
+                return CMSDF_ERR_INVALID_ARGS;
             }
             args->font = argv[i + 1];
             i++;
         } else if (strcmp(current, "-v") == 0) {
             args->verbose = true;
         } else {
-            return ERR_INVALID_ARGS;
+            return CMSDF_ERR_INVALID_ARGS;
         }
     }
     return 0;
@@ -328,7 +333,7 @@ int u32buf_append(u32buf* buf, uint32_t v) {
         buf->cap = 32;
         buf->data = malloc(buf->cap * sizeof(uint32_t));
         if (!buf->data) {
-            return ERR_OOM;
+            return CMSDF_ERR_OOM;
         }
         buf->data[0] = v;
         buf->len = 1;
@@ -338,7 +343,7 @@ int u32buf_append(u32buf* buf, uint32_t v) {
         size_t new_cap = buf->cap * 3 / 2;
         uint32_t* tmp = realloc(buf->data, new_cap * sizeof(uint32_t));
         if (!tmp) {
-            return ERR_OOM;
+            return CMSDF_ERR_OOM;
         }
         buf->cap = new_cap;
         buf->data = tmp;
@@ -357,19 +362,19 @@ int codepoints_from_utf8(uint32_t** out, size_t* out_len, const char* in, size_t
         unsigned char current = in[i];
         if (0xf0 == (0xf8 & current)) {  // 4 byte
             if (i + 3 >= in_len) {
-                err = ERR_INVALID_UTF8;
+                err = CMSDF_ERR_INVALID_UTF8;
                 goto cleanup;
             }
             unsigned char n1 = in[++i];
             unsigned char n2 = in[++i];
             unsigned char n3 = in[++i];
             if (0x80 != (0xc0 & n1) || 0x80 != (0xc0 & n2) || 0x80 != (0xc0 & n3)) {  // not continuation bytes
-                err = ERR_INVALID_UTF8;
+                err = CMSDF_ERR_INVALID_UTF8;
                 goto cleanup;
             }
             uint32_t cp = ((current & 0x07) << 18) | ((n1 & 0x3f) << 12) | ((n2 & 0x3f) << 6) | (n3 & 0x3f);
             if (cp < 0x10000 || cp > 0x10ffff) {  // overlong encoding or too large
-                err = ERR_INVALID_UTF8;
+                err = CMSDF_ERR_INVALID_UTF8;
                 goto cleanup;
             }
             err = u32buf_append(&buf, cp);
@@ -380,22 +385,22 @@ int codepoints_from_utf8(uint32_t** out, size_t* out_len, const char* in, size_t
         }
         if (0xe0 == (0xf0 & current)) {  // 3 byte
             if (i + 2 >= in_len) {
-                err = ERR_INVALID_UTF8;
+                err = CMSDF_ERR_INVALID_UTF8;
                 goto cleanup;
             }
             unsigned char n1 = in[++i];
             unsigned char n2 = in[++i];
             if (0x80 != (0xc0 & n1) || 0x80 != (0xc0 & n2)) {  // not continuation bytes
-                err = ERR_INVALID_UTF8;
+                err = CMSDF_ERR_INVALID_UTF8;
                 goto cleanup;
             }
             uint32_t cp = ((current & 0x0f) << 12) | ((n1 & 0x3f) << 6) | (n2 & 0x3f);
             if (cp < 0x800) {  // overlong encoding
-                err = ERR_INVALID_UTF8;
+                err = CMSDF_ERR_INVALID_UTF8;
                 goto cleanup;
             }
             if (0xd800 <= cp && cp <= 0xdfff) {  // surrogate pair
-                err = ERR_INVALID_UTF8;
+                err = CMSDF_ERR_INVALID_UTF8;
                 goto cleanup;
             }
             err = u32buf_append(&buf, cp);
@@ -406,17 +411,17 @@ int codepoints_from_utf8(uint32_t** out, size_t* out_len, const char* in, size_t
         }
         if (0xc0 == (0xe0 & current)) {  // 2 byte
             if (i + 1 >= in_len) {
-                err = ERR_INVALID_UTF8;
+                err = CMSDF_ERR_INVALID_UTF8;
                 goto cleanup;
             }
             unsigned char next = in[++i];
             if (0x80 != (0xc0 & next)) {  // not continuation byte
-                err = ERR_INVALID_UTF8;
+                err = CMSDF_ERR_INVALID_UTF8;
                 goto cleanup;
             }
             uint32_t cp = ((current & 0x1f) << 6) | (next & 0x3f);
             if (cp < 0x80) {  // overlong encoding
-                err = ERR_INVALID_UTF8;
+                err = CMSDF_ERR_INVALID_UTF8;
                 goto cleanup;
             }
             err = u32buf_append(&buf, cp);
@@ -432,7 +437,7 @@ int codepoints_from_utf8(uint32_t** out, size_t* out_len, const char* in, size_t
             }
             continue;
         }
-        err = ERR_INVALID_UTF8;
+        err = CMSDF_ERR_INVALID_UTF8;
         goto cleanup;
     }
     *out = buf.data;
@@ -455,6 +460,12 @@ int main_internal(int argc, char* argv[]) {
         err = prog_render(args.width, args.height);
         return err ? EXIT_FAILURE : EXIT_SUCCESS;
     }
+    bool is_generate = strcmp(args.mode, "generate") == 0;
+    bool is_edges = strcmp(args.mode, "edges") == 0;
+    if (!is_generate && !is_generate) {
+        fprintf(stderr, "unknown mode\n");
+        return EXIT_FAILURE;
+    }
 
     FT_Library ft_library;
     if (FT_Init_FreeType(&ft_library)) {
@@ -471,29 +482,26 @@ int main_internal(int argc, char* argv[]) {
     }
     if (out_len == 0) {
         fprintf(stderr, "no characters provided\n");
-        err = ERR_INVALID_UTF8;
+        err = CMSDF_ERR_INVALID_UTF8;
         goto cleanup;
     }
     FT_Face ft_face;
     err = FT_New_Face(ft_library, args.font, 0, &ft_face);
     if (err) {
         fprintf(stderr, "failed to load font face from %s\n", args.font);
-        err = ERR_FILE_IO;
+        err = CMSDF_ERR_FILE_IO;
         goto cleanup;
     }
-    decompose_params params = {
-        .fontpath = args.font,
+    cmsdf_decompose_params params = {
+        .face = ft_face,
         .character = out[0],
         .pixel_width = args.width,
         .pixel_height = args.height,
     };
-    if (strcmp(args.mode, "generate") == 0) {
-        err = prog_generate(ft_face, params, args.verbose);
-    } else if (strcmp(args.mode, "edges") == 0) {
-        err = prog_edges(ft_face, params);
-    } else {
-        fprintf(stderr, "unknown mode\n");
-        err = ERR_INVALID_ARGS;
+    if (is_generate) {
+        err = prog_generate(params, args.verbose);
+    } else if (is_edges) {
+        err = prog_edges(params);
     }
     FT_Done_Face(ft_face);
 cleanup:
