@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BSD-3-Clause
+
 cmake_minimum_required(VERSION 3.16)
 project(cmsdf LANGUAGES C)
 
@@ -21,5 +23,5 @@ if(NOT MSVC)
 endif()
 
 if (NOT WIN32)
-    target_link_libraries(cmsdf PRIVATE m)
+    target_link_libraries(cmsdf PUBLIC m)
 endif()

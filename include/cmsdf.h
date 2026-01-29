@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 #ifndef CMSDF_H
 #define CMSDF_H
 
