@@ -21,7 +21,7 @@ typedef struct {
     size_t cap;
 } cmsdf_edge_array;
 
-void cmsdf_edge_array_print(cmsdf_edge_array arr);
+void cmsdf_edge_array_print(const cmsdf_edge_array* arr);
 
 typedef struct {
     FT_Face face;
@@ -48,10 +48,19 @@ typedef struct {
     cmsdf_contour_index contour_idx;
 } cmsdf_decompose_result;
 
-int cmsdf_decompose(cmsdf_decompose_params params, cmsdf_decompose_result* result);
-size_t cmsdf_raster_edges(cmsdf_edge_array edges, cmsdf_rec rec, uint32_t* pixels);
-void cmsdf_postprocess(uint32_t* pixels, size_t width, size_t height);
-size_t cmsdf_draw_edges(cmsdf_edge_array edges, cmsdf_rec rec, uint32_t* pixels);
+int cmsdf_decompose(const cmsdf_decompose_params* params, cmsdf_decompose_result* result);
+
+typedef struct {
+    cmsdf_rec rec;
+    size_t offset;
+    size_t stride;
+} cmsdf_raster_params;
+
+size_t cmsdf_raster_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params* params, uint32_t* pixels);
+
+void cmsdf_postprocess(const cmsdf_raster_params* params, uint32_t* pixels);
+
+size_t cmsdf_draw_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params* params, uint32_t* pixels);
 
 typedef struct {
     uint32_t* msdf;
@@ -62,6 +71,6 @@ typedef struct {
     bool anti_aliasing;
 } cmsdf_render_params;
 
-size_t cmsdf_render(cmsdf_render_params params, uint32_t* pixels);
+size_t cmsdf_render(const cmsdf_render_params* params, uint32_t* pixels);
 
 #endif

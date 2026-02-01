@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include <errno.h>
+#include <math.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -138,33 +140,74 @@ cleanup:
     return err;
 }
 
-static int prog_generate(cmsdf_decompose_params params, bool verbose) {
-    if (verbose) {
-        printf("codepoint: %lx\n", params.character);
+static void tile_size(size_t count, size_t* tile_width, size_t* tile_height) {
+    size_t min_dim = (size_t)ceil(sqrt(count));
+    *tile_width = min_dim;
+    *tile_height = min_dim;
+    if (min_dim * min_dim - count >= min_dim) {
+        (*tile_height)--;
     }
-    cmsdf_decompose_result result;
-    int err = cmsdf_decompose(params, &result);
-    if (err) {
-        printf("failed to decompose freetype: %d\n", err);
-        return err;
-    }
-    if (verbose) {
-        printf("width: %zu, height: %zu\n", result.rec.width, result.rec.height);
-        printf("contours: %zu, edge count: %zu\n", result.contour_idx.len, result.edges.len);
-        cmsdf_edge_array_print(result.edges);
-    }
-    uint32_t* raster = malloc(cmsdf_raster_edges(result.edges, result.rec, NULL));
+    return;
+}
+
+typedef struct {
+    FT_Face face;
+    uint32_t* chars;
+    size_t chars_len;
+    FT_UInt pixel_width;
+    FT_UInt pixel_height;
+} generate_params;
+
+static int prog_generate(generate_params params, bool verbose) {
+    int err = 0;
+    size_t tile_width, tile_height;
+    tile_size(params.chars_len, &tile_width, &tile_height);
+    cmsdf_raster_params raster_params = {
+        .rec = (cmsdf_rec){.width = params.pixel_width, .height = params.pixel_height},
+        .offset = 0,
+        .stride = tile_width * params.pixel_width,
+    };
+    uint32_t* raster = calloc(tile_width * tile_height * cmsdf_raster_edges(NULL, &raster_params, NULL), 1);
     if (!raster) {
-        err = CMSDF_ERR_OOM;
-        goto cleanup_edges;
+        return CMSDF_ERR_OOM;
     }
-    cmsdf_raster_edges(result.edges, result.rec, raster);
-    cmsdf_postprocess(raster, result.rec.width, result.rec.height);
-    bmp_params raster_bmp_params = {.data = raster, .width = result.rec.width, .height = result.rec.height};
+    for (size_t i = 0; i < params.chars_len; i++) {
+        if (verbose) {
+            printf("codepoint: %x\n", params.chars[i]);
+        }
+        cmsdf_decompose_params decompose_params = {
+            .face = params.face,
+            .character = params.chars[i],
+            .pixel_height = params.pixel_height,
+            .pixel_width = params.pixel_width,
+        };
+        cmsdf_decompose_result result;
+        int err = cmsdf_decompose(&decompose_params, &result);
+        if (err) {
+            printf("failed to decompose freetype: %d\n", err);
+            goto cleanup;
+        }
+        if (verbose) {
+            printf("width: %zu, height: %zu\n", result.rec.width, result.rec.height);
+            printf("contours: %zu, edge count: %zu\n", result.contour_idx.len, result.edges.len);
+            cmsdf_edge_array_print(&result.edges);
+        }
+        size_t x = i % tile_width;
+        size_t y = i / tile_width;
+        raster_params.offset = x * result.rec.width + y * result.rec.height * tile_width * result.rec.width;
+        cmsdf_raster_edges(&result.edges, &raster_params, raster);
+        cmsdf_postprocess(&raster_params, raster);
+        free(result.edges.data);
+    }
+    bmp_params raster_bmp_params = {
+        .data = raster,
+        .width = tile_width * params.pixel_width,
+        .height = tile_height * params.pixel_height,
+    };
     uint8_t* buf = malloc(bmp_write(raster_bmp_params, NULL));
     if (!buf) {
         err = CMSDF_ERR_OOM;
-        goto cleanup_raster;
+        goto cleanup;
     }
     size_t bmp_size = bmp_write(raster_bmp_params, buf);
     err = write_file("out.bmp", buf, bmp_size);
@@ -172,31 +215,51 @@ static int prog_generate(cmsdf_decompose_params params, bool verbose) {
         printf("failed to write file: %d\n", err);
     }
     free(buf);
-cleanup_raster:
+cleanup:
     free(raster);
-cleanup_edges:
-    free(result.edges.data);
     return err;
 }
 
-static int prog_edges(cmsdf_decompose_params params) {
-    cmsdf_decompose_result result;
-    int err = cmsdf_decompose(params, &result);
-    if (err) {
-        return err;
-    }
-    size_t pixels_size = cmsdf_draw_edges(result.edges, result.rec, NULL);
-    uint32_t* pixels = malloc(pixels_size);
+static int prog_edges(generate_params params) {
+    int err = 0;
+    size_t tile_width, tile_height;
+    tile_size(params.chars_len, &tile_width, &tile_height);
+    cmsdf_raster_params raster_params = {
+        .rec = (cmsdf_rec){.width = params.pixel_width, .height = params.pixel_height},
+        .offset = 0,
+        .stride = tile_width * params.pixel_width,
+    };
+    uint32_t* pixels = calloc(tile_width * tile_height * cmsdf_raster_edges(NULL, &raster_params, NULL), 1);
     if (!pixels) {
-        err = CMSDF_ERR_OOM;
-        goto cleanup_edges;
+        return CMSDF_ERR_OOM;
     }
-    cmsdf_draw_edges(result.edges, result.rec, pixels);
-    bmp_params edges_bmp_params = {.data = pixels, .width = result.rec.width, .height = result.rec.height};
+    for (size_t i = 0; i < params.chars_len; i++) {
+        cmsdf_decompose_params decompose_params = {
+            .face = params.face,
+            .character = params.chars[i],
+            .pixel_height = params.pixel_height,
+            .pixel_width = params.pixel_width,
+        };
+        cmsdf_decompose_result result;
+        err = cmsdf_decompose(&decompose_params, &result);
+        if (err) {
+            goto cleanup;
+        }
+        size_t x = i % tile_width;
+        size_t y = i / tile_width;
+        raster_params.offset = x * result.rec.width + y * result.rec.height * tile_width * result.rec.width;
+        cmsdf_draw_edges(&result.edges, &raster_params, pixels);
+        free(result.edges.data);
+    }
+    bmp_params edges_bmp_params = {
+        .data = pixels,
+        .width = tile_width * params.pixel_width,
+        .height = tile_height * params.pixel_height,
+    };
     uint8_t* buf = malloc(bmp_write(edges_bmp_params, NULL));
     if (!buf) {
         err = CMSDF_ERR_OOM;
-        goto cleanup_pixels;
+        goto cleanup;
     }
     size_t bmp_size = bmp_write(edges_bmp_params, buf);
     err = write_file("edges.bmp", buf, bmp_size);
@@ -204,10 +267,8 @@ static int prog_edges(cmsdf_decompose_params params) {
         printf("failed to write file: %d\n", err);
     }
     free(buf);
-cleanup_pixels:
+cleanup:
     free(pixels);
-cleanup_edges:
-    free(result.edges.data);
     return err;
 }
 
@@ -233,12 +294,12 @@ static int prog_render(size_t render_width, size_t render_height) {
         .render_height = render_height,
         .anti_aliasing = true,
     };
-    uint32_t* rendered = malloc(cmsdf_render(render_params, NULL));
+    uint32_t* rendered = malloc(cmsdf_render(&render_params, NULL));
     if (!rendered) {
         printf("failed to render: %d\n", err);
         goto cleanup;
     }
-    cmsdf_render(render_params, rendered);
+    cmsdf_render(&render_params, rendered);
 
     bmp_params render_bmp_params = {.data = rendered, .width = render_width, .height = render_height};
     uint8_t* buf = malloc(bmp_write(render_bmp_params, NULL));
@@ -464,7 +525,7 @@ int main_internal(int argc, char* argv[]) {
     }
     bool is_generate = strcmp(args.mode, "generate") == 0;
     bool is_edges = strcmp(args.mode, "edges") == 0;
-    if (!is_generate && !is_generate) {
+    if (!is_generate && !is_edges) {
         fprintf(stderr, "unknown mode\n");
         return EXIT_FAILURE;
     }
@@ -494,9 +555,10 @@ int main_internal(int argc, char* argv[]) {
         err = CMSDF_ERR_FILE_IO;
         goto cleanup;
     }
-    cmsdf_decompose_params params = {
+    generate_params params = {
         .face = ft_face,
-        .character = out[0],
+        .chars = out,
+        .chars_len = out_len,
         .pixel_width = args.width,
         .pixel_height = args.height,
     };

@@ -4,6 +4,7 @@
 
 #include <assert.h>
 #include <stddef.h>
+#include <stdint.h>
 #define _USE_MATH_DEFINES
 #include <math.h>
 #include <stdio.h>
@@ -335,7 +336,7 @@ static edge_point_stats cmsdf_edge_dist_ortho(cmsdf_edge* e, vec2 point) {
     return (edge_point_stats){.dist = dist, .orthogonality = ortho, .sign = sign};
 }
 
-#define EDGE_ARRAY_DEFAULT_CAP 16
+#define EDGE_ARRAY_DEFAULT_CAP 32
 
 static int cmsdf_edge_array_new(cmsdf_edge_array* arr) {
     arr->data = malloc(sizeof(cmsdf_edge) * EDGE_ARRAY_DEFAULT_CAP);
@@ -363,9 +364,9 @@ static int cmsdf_edge_array_push(cmsdf_edge_array* arr, cmsdf_edge e) {
     return 0;
 }
 
-void cmsdf_edge_array_print(cmsdf_edge_array arr) {
-    for (size_t i = 0; i < arr.len; i++) {
-        cmsdf_edge* current = arr.data + i;
+void cmsdf_edge_array_print(const cmsdf_edge_array* arr) {
+    for (size_t i = 0; i < arr->len; i++) {
+        cmsdf_edge* current = arr->data + i;
         printf("start: (%g, %g) end: (%g, %g)\n", current->start.x, current->start.y, current->end.x, current->end.y);
     }
 }
@@ -437,19 +438,22 @@ static int decompose_cubic_to(const FT_Vector* control1, const FT_Vector* contro
     return err;
 }
 
-int cmsdf_decompose(cmsdf_decompose_params params, cmsdf_decompose_result* result) {
-    FT_UInt idx = FT_Get_Char_Index(params.face, params.character);
+int cmsdf_decompose(const cmsdf_decompose_params* params, cmsdf_decompose_result* result) {
+    if (!params) {
+        return CMSDF_ERR_FACE_MISSING_GLYPH;
+    }
+    FT_UInt idx = FT_Get_Char_Index(params->face, params->character);
     if (!idx) {
         return CMSDF_ERR_FACE_MISSING_GLYPH;
     }
-    FT_Error err = FT_Load_Glyph(params.face, idx, FT_LOAD_NO_SCALE);
+    FT_Error err = FT_Load_Glyph(params->face, idx, FT_LOAD_NO_SCALE);
     if (err) {
         return err;
     }
-    if (params.face->glyph->format != FT_GLYPH_FORMAT_OUTLINE) {
+    if (params->face->glyph->format != FT_GLYPH_FORMAT_OUTLINE) {
         return CMSDF_ERR_FACE_NO_OUTLINE;
     }
-    FT_Outline* outline = &params.face->glyph->outline;
+    FT_Outline* outline = &params->face->glyph->outline;
     FT_Outline_Funcs funcs = {
         .move_to = decompose_move_to,
         .line_to = decompose_line_to,
@@ -471,9 +475,9 @@ int cmsdf_decompose(cmsdf_decompose_params params, cmsdf_decompose_result* resul
     result->edges = ctx.edges;
     result->contour_idx = ctx.contour_idx;
 
-    result->rec = (cmsdf_rec){.width = params.pixel_width, .height = params.pixel_height};
+    result->rec = (cmsdf_rec){.width = params->pixel_width, .height = params->pixel_height};
 
-    cmsdf_edge_array_fit_to_grid(result->edges, (vec2){.x = params.pixel_width, .y = params.pixel_height});
+    cmsdf_edge_array_fit_to_grid(result->edges, (vec2){.x = params->pixel_width, .y = params->pixel_height});
     for (size_t i = 0; i < result->contour_idx.len; i++) {
         cmsdf_edge* start = result->edges.data + result->contour_idx.offsets[i];
         cmsdf_edge* end = NULL;
@@ -513,8 +517,12 @@ static double clamp(double a, double min, double max) {
     return a < min ? min : a;
 }
 
-size_t cmsdf_raster_edges(cmsdf_edge_array edges, cmsdf_rec rec, uint32_t* pixels) {
-    if (!pixels) {
+size_t cmsdf_raster_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params* params, uint32_t* pixels) {
+    if (!params) {
+        return 0;
+    }
+    cmsdf_rec rec = params->rec;
+    if (!edges || !pixels) {
         return rec.width * rec.height * sizeof(uint32_t);
     }
     double max_dist = sqrt(rec.width * rec.width + rec.height * rec.height);
@@ -524,8 +532,8 @@ size_t cmsdf_raster_edges(cmsdf_edge_array edges, cmsdf_rec rec, uint32_t* pixel
             edge_point_stats min_green = {.dist = max_dist};
             edge_point_stats min_red = {.dist = max_dist};
             vec2 origin = (vec2){.x = x + 0.5, .y = y + 0.5};
-            for (size_t i = 0; i < edges.len; i++) {
-                cmsdf_edge* current = edges.data + i;
+            for (size_t i = 0; i < edges->len; i++) {
+                cmsdf_edge* current = edges->data + i;
                 edge_point_stats dist = cmsdf_edge_dist_ortho(current, origin);
                 if ((current->color & 255) != 0 && edge_point_stats_eq(dist, edge_point_stats_min(dist, min_blue))) {
                     min_blue = dist;
@@ -552,7 +560,7 @@ size_t cmsdf_raster_edges(cmsdf_edge_array edges, cmsdf_rec rec, uint32_t* pixel
             uint32_t blue = (uint32_t)round((val_blue + 1) * 127.5);
             uint32_t green = (uint32_t)round((val_green + 1) * 127.5);
             uint32_t red = (uint32_t)round((val_red + 1) * 127.5);
-            pixels[x + y * rec.width] = blue | green << 8 | red << 16;
+            pixels[params->offset + x + y * params->stride] = blue | green << 8 | red << 16;
         }
     }
     return rec.width * rec.height * sizeof(uint32_t);
@@ -603,12 +611,15 @@ static bool causes_defect(uint32_t target, uint32_t neighbour) {
 // not interfere with further checks.
 // Technically the top-right neighbour could also be checked, but from a few tests
 // that did more harm than help.
-void cmsdf_postprocess(uint32_t* pixels, size_t width, size_t height) {
-    for (size_t y = 0; y < height - 1; y++) {
-        for (size_t x = 0; x < width - 1; x++) {
-            size_t check = x + y * width;
+void cmsdf_postprocess(const cmsdf_raster_params* params, uint32_t* pixels) {
+    if (!params || !pixels) {
+        return;
+    }
+    for (size_t y = 0; y < params->rec.height - 1; y++) {
+        for (size_t x = 0; x < params->rec.width - 1; x++) {
+            size_t check = params->offset + x + y * params->stride;
             size_t right = check + 1;
-            size_t up = check + width;
+            size_t up = check + params->stride;
             if (causes_defect(pixels[check], pixels[right]) || causes_defect(pixels[check], pixels[up])) {
                 uint8_t median = median3u(get_channel(pixels[check], 0), get_channel(pixels[check], 8), get_channel(pixels[check], 16));
                 pixels[check] = median | median << 8 | median << 16;
@@ -617,8 +628,12 @@ void cmsdf_postprocess(uint32_t* pixels, size_t width, size_t height) {
     }
 }
 
-size_t cmsdf_draw_edges(cmsdf_edge_array edges, cmsdf_rec rec, uint32_t* pixels) {
-    if (!pixels) {
+size_t cmsdf_draw_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params* params, uint32_t* pixels) {
+    if (!params) {
+        return 0;
+    }
+    cmsdf_rec rec = params->rec;
+    if (!pixels || !edges) {
         return rec.width * rec.width * sizeof(uint32_t);
     }
     for (size_t y = 0; y < rec.height; y++) {
@@ -626,15 +641,15 @@ size_t cmsdf_draw_edges(cmsdf_edge_array edges, cmsdf_rec rec, uint32_t* pixels)
             cmsdf_edge* closet_edge;
             double min_dist = INFINITY;
             vec2 origin = (vec2){.x = x + 0.5, .y = y + 0.5};
-            for (size_t i = 0; i < edges.len; i++) {
-                cmsdf_edge* current = edges.data + i;
+            for (size_t i = 0; i < edges->len; i++) {
+                cmsdf_edge* current = edges->data + i;
                 edge_point_stats dist = cmsdf_edge_dist_ortho(current, origin);
                 if (dist.dist < min_dist) {
                     min_dist = dist.dist;
                     closet_edge = current;
                 }
             }
-            size_t idx = x + y * rec.width;
+            size_t idx = params->offset + x + y * params->stride;
             if (min_dist > 1.5) {
                 pixels[idx] = 0;
             } else {
@@ -676,27 +691,30 @@ static double median3d(double a, double b, double c) {
     return b;
 }
 
-size_t cmsdf_render(cmsdf_render_params params, uint32_t* pixels) {
-    if (!pixels) {
-        return params.render_width * params.render_height * sizeof(uint32_t);
+size_t cmsdf_render(const cmsdf_render_params* params, uint32_t* pixels) {
+    if (!params) {
+        return 0;
     }
-    double x_mult = (double)params.msdf_width / params.render_width;
-    double y_mult = (double)params.msdf_height / params.render_height;
-    for (size_t y = 0; y < params.render_height; y++) {
-        for (size_t x = 0; x < params.render_width; x++) {
+    if (!pixels) {
+        return params->render_width * params->render_height * sizeof(uint32_t);
+    }
+    double x_mult = (double)params->msdf_width / params->render_width;
+    double y_mult = (double)params->msdf_height / params->render_height;
+    for (size_t y = 0; y < params->render_height; y++) {
+        for (size_t x = 0; x < params->render_width; x++) {
             vec2 offset = {.x = x * x_mult - 0.5, .y = y * y_mult - 0.5};
-            double blue = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 0);
-            double green = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 8);
-            double red = sample_bilinear(offset, params.msdf, params.msdf_width, params.msdf_height, 16);
+            double blue = sample_bilinear(offset, params->msdf, params->msdf_width, params->msdf_height, 0);
+            double green = sample_bilinear(offset, params->msdf, params->msdf_width, params->msdf_height, 8);
+            double red = sample_bilinear(offset, params->msdf, params->msdf_width, params->msdf_height, 16);
             double median = median3d(blue, green, red);
-            if (params.anti_aliasing) {
+            if (params->anti_aliasing) {
                 double dist = median - 127.5;
                 double color = (dist + 1.0) * 127.5;
-                pixels[x + y * params.render_width] = clamp(color, 0.0, 255.0);
+                pixels[x + y * params->render_width] = clamp(color, 0.0, 255.0);
             } else {
-                pixels[x + y * params.render_width] = median > 127.5 ? 255 : 0;
+                pixels[x + y * params->render_width] = median > 127.5 ? 255 : 0;
             }
         }
     }
-    return params.render_width * params.render_height * sizeof(uint32_t);
+    return params->render_width * params->render_height * sizeof(uint32_t);
 }
