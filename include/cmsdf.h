@@ -73,4 +73,23 @@ typedef struct {
 
 size_t cmsdf_render(const cmsdf_render_params* params, uint32_t* pixels);
 
+#define CMSDF_GEN_ATLAS_VERBOSE 1
+#define CMSDF_GEN_ATLAS_EDGES 2
+
+typedef struct {
+    FT_Face face;
+    cmsdf_rec dim;
+    uint32_t* chars;
+    size_t chars_len;
+    uint32_t flags;
+} cmsdf_gen_atlas_params;
+
+typedef struct {
+    uint32_t* pixels;
+    size_t len;
+    cmsdf_rec dim;
+} cmsdf_gen_atlas_result;
+
+int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result* result);
+
 #endif

@@ -718,3 +718,71 @@ size_t cmsdf_render(const cmsdf_render_params* params, uint32_t* pixels) {
     }
     return params->render_width * params->render_height * sizeof(uint32_t);
 }
+
+static void tile_size(size_t count, size_t* tile_width, size_t* tile_height) {
+    size_t min_dim = (size_t)ceil(sqrt(count));
+    *tile_width = min_dim;
+    *tile_height = min_dim;
+    if (min_dim * min_dim - count >= min_dim) {
+        (*tile_height)--;
+    }
+    return;
+}
+
+int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result* result) {
+    if (!params || !result) {
+        return CMSDF_ERR_FACE_MISSING_GLYPH;
+    }
+    int err = 0;
+    size_t tile_width, tile_height;
+    tile_size(params->chars_len, &tile_width, &tile_height);
+    cmsdf_raster_params raster_params = {
+        .rec = (cmsdf_rec){.width = params->dim.width, .height = params->dim.height},
+        .offset = 0,
+        .stride = tile_width * params->dim.width,
+    };
+    result->pixels = calloc(tile_width * tile_height * cmsdf_raster_edges(NULL, &raster_params, NULL), 1);
+    if (!result->pixels) {
+        return CMSDF_ERR_OOM;
+    }
+    for (size_t i = 0; i < params->chars_len; i++) {
+        if (params->flags & CMSDF_GEN_ATLAS_VERBOSE) {
+            printf("codepoint: %x\n", params->chars[i]);
+        }
+        cmsdf_decompose_params decompose_params = {
+            .face = params->face,
+            .character = params->chars[i],
+            .pixel_height = params->dim.height,
+            .pixel_width = params->dim.width,
+        };
+        cmsdf_decompose_result decompose_result;
+        int err = cmsdf_decompose(&decompose_params, &decompose_result);
+        if (err) {
+            printf("failed to decompose freetype: %d\n", err);
+            goto cleanup;
+        }
+        if (params->flags & CMSDF_GEN_ATLAS_VERBOSE) {
+            printf("width: %zu, height: %zu\n", decompose_result.rec.width, decompose_result.rec.height);
+            printf("contours: %zu, edge count: %zu\n", decompose_result.contour_idx.len, decompose_result.edges.len);
+            cmsdf_edge_array_print(&decompose_result.edges);
+        }
+        size_t x = i % tile_width;
+        size_t y = i / tile_width;
+        raster_params.offset = x * decompose_result.rec.width + y * decompose_result.rec.height * tile_width * decompose_result.rec.width;
+        if (params->flags & CMSDF_GEN_ATLAS_EDGES) {
+            cmsdf_draw_edges(&decompose_result.edges, &raster_params, result->pixels);
+        } else {
+            cmsdf_raster_edges(&decompose_result.edges, &raster_params, result->pixels);
+            cmsdf_postprocess(&raster_params, result->pixels);
+        }
+        free(decompose_result.edges.data);
+    }
+    result->dim.width = tile_width * params->dim.width;
+    result->dim.height = tile_height * params->dim.height;
+    result->len = result->dim.width * result->dim.height;
+cleanup:
+    if (err) {
+        free(result->pixels);
+    }
+    return err;
+}
