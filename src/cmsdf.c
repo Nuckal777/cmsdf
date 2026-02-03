@@ -338,7 +338,7 @@ static edge_point_stats cmsdf_edge_dist_ortho(cmsdf_edge* e, vec2 point) {
 
 #define EDGE_ARRAY_DEFAULT_CAP 32
 
-static int cmsdf_edge_array_new(cmsdf_edge_array* arr) {
+int cmsdf_edge_array_new(cmsdf_edge_array* arr) {
     arr->data = malloc(sizeof(cmsdf_edge) * EDGE_ARRAY_DEFAULT_CAP);
     if (!arr->data) {
         return CMSDF_ERR_OOM;
@@ -346,6 +346,13 @@ static int cmsdf_edge_array_new(cmsdf_edge_array* arr) {
     arr->cap = EDGE_ARRAY_DEFAULT_CAP;
     arr->len = 0;
     return 0;
+}
+
+void cmsdf_edge_array_free(cmsdf_edge_array* arr) {
+    free(arr->data);
+    arr->data = NULL;
+    arr->cap = 0;
+    arr->len = 0;
 }
 
 static int cmsdf_edge_array_push(cmsdf_edge_array* arr, cmsdf_edge e) {
@@ -398,7 +405,7 @@ static void cmsdf_edge_array_fit_to_grid(cmsdf_edge_array edges, vec2 dim) {
 
 typedef struct {
     vec2 start;
-    cmsdf_edge_array edges;
+    cmsdf_edge_array* edges;
     cmsdf_contour_index contour_idx;
 } decompose_ctx;
 
@@ -412,28 +419,28 @@ static int decompose_move_to(const FT_Vector* to, void* user) {
     if (ctx->contour_idx.len == CMSDF_CONTOUR_INDEX_CAP - 1) {
         return CMSDF_ERR_OOM;
     }
-    ctx->contour_idx.offsets[ctx->contour_idx.len] = ctx->edges.len;
+    ctx->contour_idx.offsets[ctx->contour_idx.len] = ctx->edges->len;
     ctx->contour_idx.len++;
     return 0;
 }
 
 static int decompose_line_to(const FT_Vector* to, void* user) {
     decompose_ctx* ctx = (decompose_ctx*)user;
-    int err = cmsdf_edge_array_push(&ctx->edges, make_line(ctx->start, from_ft_vec(*to)));
+    int err = cmsdf_edge_array_push(ctx->edges, make_line(ctx->start, from_ft_vec(*to)));
     ctx->start = from_ft_vec(*to);
     return err;
 }
 
 static int decompose_conic_to(const FT_Vector* control, const FT_Vector* to, void* user) {
     decompose_ctx* ctx = (decompose_ctx*)user;
-    int err = cmsdf_edge_array_push(&ctx->edges, make_conic(ctx->start, from_ft_vec(*to), from_ft_vec(*control)));
+    int err = cmsdf_edge_array_push(ctx->edges, make_conic(ctx->start, from_ft_vec(*to), from_ft_vec(*control)));
     ctx->start = from_ft_vec(*to);
     return err;
 }
 
 static int decompose_cubic_to(const FT_Vector* control1, const FT_Vector* control2, const FT_Vector* to, void* user) {
     decompose_ctx* ctx = (decompose_ctx*)user;
-    int err = cmsdf_edge_array_push(&ctx->edges, make_cubic(ctx->start, from_ft_vec(*to), from_ft_vec(*control1), from_ft_vec(*control2)));
+    int err = cmsdf_edge_array_push(ctx->edges, make_cubic(ctx->start, from_ft_vec(*to), from_ft_vec(*control1), from_ft_vec(*control2)));
     ctx->start = from_ft_vec(*to);
     return err;
 }
@@ -464,15 +471,21 @@ int cmsdf_decompose(const cmsdf_decompose_params* params, cmsdf_decompose_result
     };
     decompose_ctx ctx;
     ctx.contour_idx.len = 0;
-    err = cmsdf_edge_array_new(&ctx.edges);
-    if (err) {
-        return err;
+    cmsdf_edge_array tmp_edges;
+    if (params->arr) {
+        ctx.edges = params->arr;
+    } else {
+        err = cmsdf_edge_array_new(&tmp_edges);
+        if (err) {
+            return err;
+        }
+        ctx.edges = &tmp_edges;
     }
     err = FT_Outline_Decompose(outline, &funcs, &ctx);
     if (err) {
         goto cleanup;
     }
-    result->edges = ctx.edges;
+    result->edges = *ctx.edges;
     result->contour_idx = ctx.contour_idx;
 
     result->rec = (cmsdf_rec){.width = params->pixel_width, .height = params->pixel_height};
@@ -503,7 +516,7 @@ int cmsdf_decompose(const cmsdf_decompose_params* params, cmsdf_decompose_result
     }
 cleanup:
     if (err) {
-        free(ctx.edges.data);
+        cmsdf_edge_array_free(ctx.edges);
     }
     return err;
 }
@@ -741,6 +754,11 @@ int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result
         .offset = 0,
         .stride = tile_width * params->dim.width,
     };
+    cmsdf_edge_array arr;
+    err = cmsdf_edge_array_new(&arr);
+    if (err) {
+        return err;
+    }
     result->pixels = calloc(tile_width * tile_height * cmsdf_raster_edges(NULL, &raster_params, NULL), 1);
     if (!result->pixels) {
         return CMSDF_ERR_OOM;
@@ -754,6 +772,7 @@ int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result
             .character = params->chars[i],
             .pixel_height = params->dim.height,
             .pixel_width = params->dim.width,
+            .arr = &arr,
         };
         cmsdf_decompose_result decompose_result;
         int err = cmsdf_decompose(&decompose_params, &decompose_result);
@@ -775,12 +794,13 @@ int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result
             cmsdf_raster_edges(&decompose_result.edges, &raster_params, result->pixels);
             cmsdf_postprocess(&raster_params, result->pixels);
         }
-        free(decompose_result.edges.data);
+        arr.len = 0;
     }
     result->dim.width = tile_width * params->dim.width;
     result->dim.height = tile_height * params->dim.height;
     result->len = result->dim.width * result->dim.height;
 cleanup:
+    cmsdf_edge_array_free(&arr);
     if (err) {
         free(result->pixels);
     }

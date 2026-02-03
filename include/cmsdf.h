@@ -21,6 +21,8 @@ typedef struct {
     size_t cap;
 } cmsdf_edge_array;
 
+int cmsdf_edge_array_new(cmsdf_edge_array* arr);
+void cmsdf_edge_array_free(cmsdf_edge_array* arr);
 void cmsdf_edge_array_print(const cmsdf_edge_array* arr);
 
 typedef struct {
@@ -28,6 +30,7 @@ typedef struct {
     FT_ULong character;
     FT_UInt pixel_width;
     FT_UInt pixel_height;
+    cmsdf_edge_array* arr;
 } cmsdf_decompose_params;
 
 #define CMSDF_CONTOUR_INDEX_CAP 15
