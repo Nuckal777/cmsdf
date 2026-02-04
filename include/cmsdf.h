@@ -59,14 +59,14 @@ typedef struct {
     size_t stride;
 } cmsdf_raster_params;
 
-size_t cmsdf_raster_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params* params, uint32_t* pixels);
+size_t cmsdf_raster_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params* params, uint8_t* pixels);
 
-void cmsdf_postprocess(const cmsdf_raster_params* params, uint32_t* pixels);
+void cmsdf_postprocess(const cmsdf_raster_params* params, uint8_t* pixels);
 
-size_t cmsdf_draw_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params* params, uint32_t* pixels);
+size_t cmsdf_draw_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params* params, uint8_t* pixels);
 
 typedef struct {
-    uint32_t* msdf;
+    uint8_t* msdf;
     size_t msdf_width;
     size_t msdf_height;
     size_t render_width;
@@ -74,7 +74,7 @@ typedef struct {
     bool anti_aliasing;
 } cmsdf_render_params;
 
-size_t cmsdf_render(const cmsdf_render_params* params, uint32_t* pixels);
+size_t cmsdf_render(const cmsdf_render_params* params, uint8_t* pixels);
 
 #define CMSDF_GEN_ATLAS_VERBOSE 1
 #define CMSDF_GEN_ATLAS_EDGES 2
@@ -88,11 +88,10 @@ typedef struct {
 } cmsdf_gen_atlas_params;
 
 typedef struct {
-    uint32_t* pixels;
     size_t len;
     cmsdf_rec dim;
 } cmsdf_gen_atlas_result;
 
-int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result* result);
+int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result* result, uint8_t* pixels);
 
 #endif

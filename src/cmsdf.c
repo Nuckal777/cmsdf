@@ -530,7 +530,7 @@ static double clamp(double a, double min, double max) {
     return a < min ? min : a;
 }
 
-size_t cmsdf_raster_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params* params, uint32_t* pixels) {
+size_t cmsdf_raster_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params* params, uint8_t* pixels) {
     if (!params) {
         return 0;
     }
@@ -570,10 +570,11 @@ size_t cmsdf_raster_edges(const cmsdf_edge_array* edges, const cmsdf_raster_para
             if (min_red.sign < 0) {
                 val_red *= -1;
             }
-            uint32_t blue = (uint32_t)round((val_blue + 1) * 127.5);
-            uint32_t green = (uint32_t)round((val_green + 1) * 127.5);
-            uint32_t red = (uint32_t)round((val_red + 1) * 127.5);
-            pixels[params->offset + x + y * params->stride] = blue | green << 8 | red << 16;
+            size_t idx = 4 * (params->offset + x + y * params->stride);
+            pixels[idx] = (uint8_t)round((val_blue + 1) * 127.5);
+            pixels[idx + 1] = (uint8_t)round((val_green + 1) * 127.5);
+            pixels[idx + 2] = (uint8_t)round((val_red + 1) * 127.5);
+            pixels[idx + 3] = 0;
         }
     }
     return rec.width * rec.height * sizeof(uint32_t);
@@ -624,24 +625,30 @@ static bool causes_defect(uint32_t target, uint32_t neighbour) {
 // not interfere with further checks.
 // Technically the top-right neighbour could also be checked, but from a few tests
 // that did more harm than help.
-void cmsdf_postprocess(const cmsdf_raster_params* params, uint32_t* pixels) {
+void cmsdf_postprocess(const cmsdf_raster_params* params, uint8_t* pixels) {
     if (!params || !pixels) {
         return;
     }
     for (size_t y = 0; y < params->rec.height - 1; y++) {
         for (size_t x = 0; x < params->rec.width - 1; x++) {
-            size_t check = params->offset + x + y * params->stride;
-            size_t right = check + 1;
-            size_t up = check + params->stride;
-            if (causes_defect(pixels[check], pixels[right]) || causes_defect(pixels[check], pixels[up])) {
-                uint8_t median = median3u(get_channel(pixels[check], 0), get_channel(pixels[check], 8), get_channel(pixels[check], 16));
-                pixels[check] = median | median << 8 | median << 16;
+            size_t check = 4 * (params->offset + x + y * params->stride);
+            size_t right = check + 4;
+            size_t up = check + 4 * params->stride;
+            uint32_t pc, pr, pu;
+            memcpy(&pc, pixels + check, 4);
+            memcpy(&pr, pixels + right, 4);
+            memcpy(&pu, pixels + up, 4);
+            if (causes_defect(pc, pr) || causes_defect(pc, pu)) {
+                uint8_t median = median3u(get_channel(pc, 0), get_channel(pc, 8), get_channel(pc, 16));
+                pixels[check] = median;
+                pixels[check + 1] = median;
+                pixels[check + 2] = median;
             }
         }
     }
 }
 
-size_t cmsdf_draw_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params* params, uint32_t* pixels) {
+size_t cmsdf_draw_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params* params, uint8_t* pixels) {
     if (!params) {
         return 0;
     }
@@ -662,18 +669,21 @@ size_t cmsdf_draw_edges(const cmsdf_edge_array* edges, const cmsdf_raster_params
                     closet_edge = current;
                 }
             }
-            size_t idx = params->offset + x + y * params->stride;
+            size_t idx = 4 * (params->offset + x + y * params->stride);
             if (min_dist > 1.5) {
-                pixels[idx] = 0;
+                memset(pixels + idx, 0, 4);
             } else {
-                pixels[idx] = closet_edge->color;
+                pixels[idx] = get_channel(closet_edge->color, 0);
+                pixels[idx + 1] = get_channel(closet_edge->color, 8);
+                pixels[idx + 2] = get_channel(closet_edge->color, 16);
+                pixels[idx + 3] = 0;
             }
         }
     }
     return rec.width * rec.height * sizeof(uint32_t);
 }
 
-static uint32_t sample_bilinear(vec2 at, uint32_t* image, size_t width, size_t height, uint32_t shift) {
+static uint32_t sample_bilinear(vec2 at, uint8_t* image, size_t width, size_t height, size_t byte) {
     double frac_x, int_x;
     frac_x = modf(at.x, &int_x);
     double frac_y, int_y;
@@ -688,10 +698,10 @@ static uint32_t sample_bilinear(vec2 at, uint32_t* image, size_t width, size_t h
     high_x = high_x >= width ? width - 1 : high_x;
     high_y = high_y >= height ? height - 1 : high_y;
 
-    double part00 = get_channel(image[x + y * width], shift) * (1 - frac_x) * (1 - frac_y);
-    double part01 = get_channel(image[x + high_y * width], shift) * (1 - frac_x) * frac_y;
-    double part10 = get_channel(image[high_x + y * width], shift) * frac_x * (1 - frac_y);
-    double part11 = get_channel(image[high_x + high_y * width], shift) * frac_x * frac_y;
+    double part00 = image[4 * (x + y * width) + byte] * (1 - frac_x) * (1 - frac_y);
+    double part01 = image[4 * (x + high_y * width) + byte] * (1 - frac_x) * frac_y;
+    double part10 = image[4 * (high_x + y * width) + byte] * frac_x * (1 - frac_y);
+    double part11 = image[4 * (high_x + high_y * width) + byte] * frac_x * frac_y;
     return part00 + part01 + part10 + part11;
 }
 
@@ -704,7 +714,7 @@ static double median3d(double a, double b, double c) {
     return b;
 }
 
-size_t cmsdf_render(const cmsdf_render_params* params, uint32_t* pixels) {
+size_t cmsdf_render(const cmsdf_render_params* params, uint8_t* pixels) {
     if (!params) {
         return 0;
     }
@@ -717,16 +727,18 @@ size_t cmsdf_render(const cmsdf_render_params* params, uint32_t* pixels) {
         for (size_t x = 0; x < params->render_width; x++) {
             vec2 offset = {.x = x * x_mult - 0.5, .y = y * y_mult - 0.5};
             double blue = sample_bilinear(offset, params->msdf, params->msdf_width, params->msdf_height, 0);
-            double green = sample_bilinear(offset, params->msdf, params->msdf_width, params->msdf_height, 8);
-            double red = sample_bilinear(offset, params->msdf, params->msdf_width, params->msdf_height, 16);
+            double green = sample_bilinear(offset, params->msdf, params->msdf_width, params->msdf_height, 1);
+            double red = sample_bilinear(offset, params->msdf, params->msdf_width, params->msdf_height, 2);
             double median = median3d(blue, green, red);
+            size_t idx = 4 * (x + y * params->render_width);
             if (params->anti_aliasing) {
                 double dist = median - 127.5;
                 double color = (dist + 1.0) * 127.5;
-                pixels[x + y * params->render_width] = clamp(color, 0.0, 255.0);
+                pixels[idx] = clamp(color, 0.0, 255.0);
             } else {
-                pixels[x + y * params->render_width] = median > 127.5 ? 255 : 0;
+                pixels[idx] = median > 127.5 ? 255 : 0;
             }
+            memset(pixels + idx + 1, 0, 3);
         }
     }
     return params->render_width * params->render_height * sizeof(uint32_t);
@@ -742,7 +754,7 @@ static void tile_size(size_t count, size_t* tile_width, size_t* tile_height) {
     return;
 }
 
-int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result* result) {
+int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result* result, uint8_t* pixels) {
     if (!params || !result) {
         return CMSDF_ERR_FACE_MISSING_GLYPH;
     }
@@ -754,14 +766,17 @@ int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result
         .offset = 0,
         .stride = tile_width * params->dim.width,
     };
+    size_t atlas_len = tile_width * tile_height * cmsdf_raster_edges(NULL, &raster_params, NULL);
+    result->dim.width = tile_width * params->dim.width;
+    result->dim.height = tile_height * params->dim.height;
+    result->len = atlas_len;
+    if (!pixels) {
+        return 0;
+    }
     cmsdf_edge_array arr;
     err = cmsdf_edge_array_new(&arr);
     if (err) {
         return err;
-    }
-    result->pixels = calloc(tile_width * tile_height * cmsdf_raster_edges(NULL, &raster_params, NULL), 1);
-    if (!result->pixels) {
-        return CMSDF_ERR_OOM;
     }
     for (size_t i = 0; i < params->chars_len; i++) {
         if (params->flags & CMSDF_GEN_ATLAS_VERBOSE) {
@@ -789,20 +804,14 @@ int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result
         size_t y = i / tile_width;
         raster_params.offset = x * decompose_result.rec.width + y * decompose_result.rec.height * tile_width * decompose_result.rec.width;
         if (params->flags & CMSDF_GEN_ATLAS_EDGES) {
-            cmsdf_draw_edges(&decompose_result.edges, &raster_params, result->pixels);
+            cmsdf_draw_edges(&decompose_result.edges, &raster_params, pixels);
         } else {
-            cmsdf_raster_edges(&decompose_result.edges, &raster_params, result->pixels);
-            cmsdf_postprocess(&raster_params, result->pixels);
+            cmsdf_raster_edges(&decompose_result.edges, &raster_params, pixels);
+            cmsdf_postprocess(&raster_params, pixels);
         }
         arr.len = 0;
     }
-    result->dim.width = tile_width * params->dim.width;
-    result->dim.height = tile_height * params->dim.height;
-    result->len = result->dim.width * result->dim.height;
 cleanup:
     cmsdf_edge_array_free(&arr);
-    if (err) {
-        free(result->pixels);
-    }
     return err;
 }

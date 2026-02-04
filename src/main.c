@@ -16,12 +16,12 @@
 #define BMP_HEADER_SIZE 54
 
 typedef struct {
-    uint32_t* data;
+    uint8_t* data;
     int32_t width;
     int32_t height;
 } bmp_params;
 
-size_t bmp_write(bmp_params params, uint8_t* buf) {
+size_t bmp_write_header(bmp_params params, uint8_t* buf) {
     uint32_t data_size = params.width * params.height * sizeof(uint32_t);
     uint32_t total_size = BMP_HEADER_SIZE + data_size;
     if (buf == NULL) {
@@ -45,9 +45,7 @@ size_t bmp_write(bmp_params params, uint8_t* buf) {
     info_header[14] = 32;
     info_header[15] = 0;
     memset(info_header + 16, 0, 24);
-    // data
-    memcpy(buf + BMP_HEADER_SIZE, params.data, data_size);
-    return total_size;
+    return BMP_HEADER_SIZE;
 }
 
 int read_bmp(uint8_t* buf, size_t buf_size, bmp_params* out) {
@@ -79,7 +77,7 @@ int read_bmp(uint8_t* buf, size_t buf_size, bmp_params* out) {
     if (val != 32) {
         return CMSDF_ERR_INVALID_BMP;
     }
-    out->data = (uint32_t*)(buf + BMP_HEADER_SIZE);
+    out->data = buf + BMP_HEADER_SIZE;
     return 0;
 }
 
@@ -149,28 +147,35 @@ typedef struct {
 
 static int prog_generate(const cmsdf_gen_atlas_params* params) {
     cmsdf_gen_atlas_result result;
-    int err = cmsdf_gen_atlas(params, &result);
+    int err = cmsdf_gen_atlas(params, &result, NULL);
     if (err) {
         return err;
     }
+    uint8_t* buf = calloc(BMP_HEADER_SIZE + result.len, sizeof(uint8_t));
+    err = cmsdf_gen_atlas(params, &result, buf + BMP_HEADER_SIZE);
+    if (err) {
+        goto cleanup;
+    }
     bmp_params raster_bmp_params = {
-        .data = result.pixels,
+        .data = buf,
         .width = result.dim.width,
         .height = result.dim.height,
     };
-    uint8_t* buf = malloc(bmp_write(raster_bmp_params, NULL));
     if (!buf) {
         err = CMSDF_ERR_OOM;
         goto cleanup;
     }
-    size_t bmp_size = bmp_write(raster_bmp_params, buf);
-    err = write_file("out.bmp", buf, bmp_size);
+    bmp_write_header(raster_bmp_params, buf);
+    if (params->flags & CMSDF_GEN_ATLAS_EDGES) {
+        err = write_file("edges.bmp", buf, BMP_HEADER_SIZE + result.len);
+    } else {
+        err = write_file("out.bmp", buf, BMP_HEADER_SIZE + result.len);
+    }
     if (err) {
         printf("failed to write file: %d\n", err);
     }
-    free(buf);
 cleanup:
-    free(result.pixels);
+    free(buf);
     return err;
 }
 
@@ -196,26 +201,20 @@ static int prog_render(size_t render_width, size_t render_height) {
         .render_height = render_height,
         .anti_aliasing = true,
     };
-    uint32_t* rendered = malloc(cmsdf_render(&render_params, NULL));
+    size_t rendered_size = BMP_HEADER_SIZE + cmsdf_render(&render_params, NULL);
+    uint8_t* rendered = malloc(rendered_size);
     if (!rendered) {
         printf("failed to render: %d\n", err);
         goto cleanup;
     }
-    cmsdf_render(&render_params, rendered);
+    cmsdf_render(&render_params, rendered + BMP_HEADER_SIZE);
 
     bmp_params render_bmp_params = {.data = rendered, .width = render_width, .height = render_height};
-    uint8_t* buf = malloc(bmp_write(render_bmp_params, NULL));
-    if (!buf) {
-        err = CMSDF_ERR_OOM;
-        goto cleanup_rendered;
-    }
-    size_t bmp_size = bmp_write(render_bmp_params, buf);
-    err = write_file("render.bmp", buf, bmp_size);
+    bmp_write_header(render_bmp_params, (uint8_t*)rendered);
+    err = write_file("render.bmp", rendered, rendered_size);
     if (err) {
         printf("failed to write file: %d\n", err);
     }
-    free(buf);
-cleanup_rendered:
     free(rendered);
 cleanup:
     free(bmp_data);
