@@ -801,7 +801,7 @@ int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result
             cmsdf_edge_array_print(&decompose_result.edges);
         }
         size_t x = i % tile_width;
-        size_t y = i / tile_width;
+        size_t y = tile_height - i / tile_width - 1;
         raster_params.offset = x * decompose_result.rec.width + y * decompose_result.rec.height * tile_width * decompose_result.rec.width;
         if (params->flags & CMSDF_GEN_ATLAS_EDGES) {
             cmsdf_draw_edges(&decompose_result.edges, &raster_params, pixels);

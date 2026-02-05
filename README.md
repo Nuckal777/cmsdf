@@ -89,6 +89,7 @@ int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result
 
 Passing `NULL` for `pixels` returns the minimum size required in bytes in `result.len`.
 That buffer needs to be zeroed before passing it to `cmsdf_gen_atlas()`.
+The function returns `0` on success.
 
 For an example please refer to the included CLI contained in `src/main.c`.
 

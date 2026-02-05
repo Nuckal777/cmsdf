@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -145,7 +146,7 @@ typedef struct {
     FT_UInt pixel_height;
 } generate_params;
 
-static int prog_generate(const cmsdf_gen_atlas_params* params) {
+static int prog_generate(const cmsdf_gen_atlas_params* params, const char* basename) {
     cmsdf_gen_atlas_result result;
     int err = cmsdf_gen_atlas(params, &result, NULL);
     if (err) {
@@ -166,10 +167,12 @@ static int prog_generate(const cmsdf_gen_atlas_params* params) {
         goto cleanup;
     }
     bmp_write_header(raster_bmp_params, buf);
+    char fname[512];
+    snprintf(fname, sizeof(fname), "%s.bmp", basename);
     if (params->flags & CMSDF_GEN_ATLAS_EDGES) {
-        err = write_file("edges.bmp", buf, BMP_HEADER_SIZE + result.len);
+        err = write_file(fname, buf, BMP_HEADER_SIZE + result.len);
     } else {
-        err = write_file("out.bmp", buf, BMP_HEADER_SIZE + result.len);
+        err = write_file(fname, buf, BMP_HEADER_SIZE + result.len);
     }
     if (err) {
         printf("failed to write file: %d\n", err);
@@ -227,6 +230,7 @@ typedef struct {
     long width;
     long height;
     const char* character;
+    const char* output;
     bool verbose;
 } prog_args;
 
@@ -236,6 +240,7 @@ static int parse_args(int argc, char* argv[], prog_args* args) {
     args->height = 32;
     args->character = "A";
     args->font = "/usr/share/fonts/liberation/LiberationMono-Regular.ttf";
+    args->output = "out";
     args->verbose = false;
     if (argc < 2) {
         return CMSDF_ERR_INVALID_ARGS;
@@ -274,6 +279,12 @@ static int parse_args(int argc, char* argv[], prog_args* args) {
                 return CMSDF_ERR_INVALID_ARGS;
             }
             args->font = argv[i + 1];
+            i++;
+        } else if (strcmp(current, "-o") == 0) {
+            if (i >= argc) {
+                return CMSDF_ERR_INVALID_ARGS;
+            }
+            args->output = argv[i + 1];
             i++;
         } else if (strcmp(current, "-v") == 0) {
             args->verbose = true;
@@ -466,7 +477,7 @@ int main_internal(int argc, char* argv[]) {
     if (is_edges) {
         params.flags |= CMSDF_GEN_ATLAS_EDGES;
     }
-    err = prog_generate(&params);
+    err = prog_generate(&params, args.output);
     FT_Done_Face(ft_face);
 cleanup:
     free(out);
