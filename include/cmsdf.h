@@ -12,6 +12,7 @@
 #define CMSDF_ERR_FACE_MISSING_GLYPH -1337
 #define CMSDF_ERR_FACE_NO_OUTLINE -1338
 #define CMSDF_ERR_OOM -1339
+#define CMSDF_ERR_INVALID_ARGUMENT -1340
 
 typedef struct cmsdf_edge cmsdf_edge;
 
@@ -93,5 +94,7 @@ typedef struct {
 } cmsdf_gen_atlas_result;
 
 int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result* result, uint8_t* pixels);
+
+int cmsdf_gen_bmfont(const cmsdf_gen_atlas_params* params, const char* pagename, uint8_t* buf, size_t* buf_len);
 
 #endif

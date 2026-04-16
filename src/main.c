@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "cmsdf.h"
+#include "freetype/freetype.h"
 
 #define CMSDF_ERR_FILE_IO -1340
 #define CMSDF_ERR_INVALID_ARGS -1341
@@ -147,12 +148,19 @@ typedef struct {
 } generate_params;
 
 static int prog_generate(const cmsdf_gen_atlas_params* params, const char* basename) {
+    int err = FT_Set_Pixel_Sizes(params->face, params->dim.width, params->dim.height);
+    if (err) {
+        return err;
+    }
     cmsdf_gen_atlas_result result;
-    int err = cmsdf_gen_atlas(params, &result, NULL);
+    err = cmsdf_gen_atlas(params, &result, NULL);
     if (err) {
         return err;
     }
     uint8_t* buf = calloc(BMP_HEADER_SIZE + result.len, sizeof(uint8_t));
+    if (!buf) {
+        return CMSDF_ERR_OOM;
+    }
     err = cmsdf_gen_atlas(params, &result, buf + BMP_HEADER_SIZE);
     if (err) {
         goto cleanup;
@@ -162,27 +170,50 @@ static int prog_generate(const cmsdf_gen_atlas_params* params, const char* basen
         .width = result.dim.width,
         .height = result.dim.height,
     };
-    if (!buf) {
+    bmp_write_header(raster_bmp_params, buf);
+    char fname[512];
+    int written = snprintf(fname, sizeof(fname), "%s.bmp", basename);
+    if (written < 0 || (uint)written >= sizeof(fname)) {
+        err = CMSDF_ERR_INVALID_ARGUMENT;
+        goto cleanup;
+    }
+    err = write_file(fname, buf, BMP_HEADER_SIZE + result.len);
+    if (err) {
+        printf("failed to write file %s: %d\n", fname, err);
+    }
+
+    written = snprintf(fname, sizeof(fname), "%s.fnt", basename);
+    if (written < 0 || (uint)written >= sizeof(fname)) {
+        err = CMSDF_ERR_INVALID_ARGUMENT;
+        goto cleanup;
+    }
+    size_t bmfont_len;
+    err = cmsdf_gen_bmfont(params, fname, NULL, &bmfont_len);
+    if (err) {
+        goto cleanup;
+    }
+    uint8_t* bmfont = malloc(bmfont_len);
+    if (!bmfont) {
         err = CMSDF_ERR_OOM;
         goto cleanup;
     }
-    bmp_write_header(raster_bmp_params, buf);
-    char fname[512];
-    snprintf(fname, sizeof(fname), "%s.bmp", basename);
-    if (params->flags & CMSDF_GEN_ATLAS_EDGES) {
-        err = write_file(fname, buf, BMP_HEADER_SIZE + result.len);
-    } else {
-        err = write_file(fname, buf, BMP_HEADER_SIZE + result.len);
-    }
+    err = cmsdf_gen_bmfont(params, fname, bmfont, &bmfont_len);
     if (err) {
-        printf("failed to write file: %d\n", err);
+        free(bmfont);
+        goto cleanup;
     }
+    err = write_file(fname, bmfont, bmfont_len);
+    if (err) {
+        printf("failed to write file %s: %d\n", fname, err);
+        err = 0;
+    }
+    free(bmfont);
 cleanup:
     free(buf);
     return err;
 }
 
-static int prog_render(size_t render_width, size_t render_height) {
+static int prog_render(size_t render_width, size_t render_height, const char* basename) {
     uint8_t* bmp_data;
     size_t bmp_data_size;
     int err = read_file("out.bmp", (void**)&bmp_data, &bmp_data_size);
@@ -214,9 +245,15 @@ static int prog_render(size_t render_width, size_t render_height) {
 
     bmp_params render_bmp_params = {.data = rendered, .width = render_width, .height = render_height};
     bmp_write_header(render_bmp_params, (uint8_t*)rendered);
-    err = write_file("render.bmp", rendered, rendered_size);
+    char fname[512];
+    int written = snprintf(fname, sizeof(fname), "%s.bmp", basename);
+    if (written < 0 || (uint)written >= sizeof(fname)) {
+        err = CMSDF_ERR_INVALID_ARGUMENT;
+        goto cleanup;
+    }
+    err = write_file(fname, rendered, rendered_size);
     if (err) {
-        printf("failed to write file: %d\n", err);
+        printf("failed to write file %s: %d\n", fname, err);
     }
     free(rendered);
 cleanup:
@@ -246,6 +283,9 @@ static int parse_args(int argc, char* argv[], prog_args* args) {
         return CMSDF_ERR_INVALID_ARGS;
     }
     args->mode = argv[1];
+    if (strcmp(args->mode, "render") == 0) {
+        args->output = "render";
+    }
     for (int i = 2; i < argc; i++) {
         const char* current = argv[i];
         if (strcmp(current, "-w") == 0) {
@@ -432,7 +472,7 @@ int main_internal(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
     if (strcmp(args.mode, "render") == 0) {
-        err = prog_render(args.width, args.height);
+        err = prog_render(args.width, args.height, args.output);
         return err ? EXIT_FAILURE : EXIT_SUCCESS;
     }
     bool is_generate = strcmp(args.mode, "generate") == 0;

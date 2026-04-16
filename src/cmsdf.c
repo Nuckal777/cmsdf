@@ -5,6 +5,8 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#include "freetype/freetype.h"
 #define _USE_MATH_DEFINES
 #include <math.h>
 #include <stdio.h>
@@ -447,7 +449,7 @@ static int decompose_cubic_to(const FT_Vector* control1, const FT_Vector* contro
 
 int cmsdf_decompose(const cmsdf_decompose_params* params, cmsdf_decompose_result* result) {
     if (!params) {
-        return CMSDF_ERR_FACE_MISSING_GLYPH;
+        return CMSDF_ERR_INVALID_ARGUMENT;
     }
     FT_UInt idx = FT_Get_Char_Index(params->face, params->character);
     if (!idx) {
@@ -756,7 +758,7 @@ static void tile_size(size_t count, size_t* tile_width, size_t* tile_height) {
 
 int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result* result, uint8_t* pixels) {
     if (!params || !result) {
-        return CMSDF_ERR_FACE_MISSING_GLYPH;
+        return CMSDF_ERR_INVALID_ARGUMENT;
     }
     int err = 0;
     size_t tile_width, tile_height;
@@ -813,5 +815,147 @@ int cmsdf_gen_atlas(const cmsdf_gen_atlas_params* params, cmsdf_gen_atlas_result
     }
 cleanup:
     cmsdf_edge_array_free(&arr);
+    return err;
+}
+
+#define CMSDF_BMFONT_BLOCK_HEADER_LEN 5
+
+static uint8_t* cmsdf_gen_bmfont_write_block_header(uint8_t* buf, uint8_t ty, uint32_t len) {
+    buf[0] = ty;
+    memcpy(buf + 1, &len, sizeof(len));
+    return buf + CMSDF_BMFONT_BLOCK_HEADER_LEN;
+}
+
+static size_t cmsdf_gen_bmfont_info_block(const cmsdf_gen_atlas_params* params, uint8_t* buf) {
+    size_t block_len = 15;  // 14 bytes + null byte for family name
+    if (params->face->family_name) {
+        block_len += strlen(params->face->family_name);
+    }
+    if (!buf) {
+        return block_len + CMSDF_BMFONT_BLOCK_HEADER_LEN;
+    }
+    uint8_t* block = cmsdf_gen_bmfont_write_block_header(buf, 1, block_len);
+
+    int16_t font_size = params->dim.height;
+    memcpy(block, &font_size, sizeof(font_size));
+    block[2] = 2;              // flags, set unicode
+    block[3] = 0;              // charset, if not unicode
+    uint16_t stretch_h = 100;  // in percent
+    memcpy(block + 4, &stretch_h, sizeof(stretch_h));
+    memset(block + 6, 1, 5);   // first byte means no supersampling, 1 pixel padding up, down, left, right
+    memset(block + 11, 0, 3);  // no horizontal + vertical spacing between glyphs, no outline thickness
+    if (params->face->family_name) {
+        memcpy(block + 14, params->face->family_name, strlen(params->face->family_name) + 1);
+    } else {
+        memset(block + 14, 0, 1);
+    }
+    return block_len + CMSDF_BMFONT_BLOCK_HEADER_LEN;
+}
+
+static size_t cmsdf_gen_bmfont_common_block(const cmsdf_gen_atlas_params* params, uint8_t* buf) {
+    size_t block_len = 15;
+    if (!buf) {
+        return block_len + CMSDF_BMFONT_BLOCK_HEADER_LEN;
+    }
+    uint8_t* block = cmsdf_gen_bmfont_write_block_header(buf, 2, block_len);
+
+    size_t tile_width, tile_height;
+    tile_size(params->chars_len, &tile_width, &tile_height);
+    uint16_t line_height = params->face->size->metrics.height / 64;
+    memcpy(block, &line_height, sizeof(line_height));
+    uint16_t base = params->face->size->metrics.ascender / 64;
+    memcpy(block + 2, &base, sizeof(base));
+    uint16_t tex_width = params->dim.width * tile_width;
+    memcpy(block + 4, &tex_width, sizeof(tex_width));
+    uint16_t tex_height = params->dim.height * tile_height;
+    memcpy(block + 6, &tex_height, sizeof(tex_height));
+    uint16_t pages = 1;
+    memcpy(block + 8, &pages, sizeof(pages));
+    memset(block + 10, 0, 5);  // 1 byte no flags, 4 byte channel type, which is not needed
+    return block_len + CMSDF_BMFONT_BLOCK_HEADER_LEN;
+}
+
+static size_t cmsdf_gen_bmfont_pages_block(const char* pagename, uint8_t* buf) {
+    size_t block_len = strlen(pagename) + 1;
+    if (!buf) {
+        return block_len + CMSDF_BMFONT_BLOCK_HEADER_LEN;
+    }
+    uint8_t* block = cmsdf_gen_bmfont_write_block_header(buf, 3, block_len);
+    memcpy(block, pagename, strlen(pagename) + 1);
+    return block_len + CMSDF_BMFONT_BLOCK_HEADER_LEN;
+}
+
+static int cmsdf_gen_bmfont_chars_block(const cmsdf_gen_atlas_params* params, uint8_t* buf, size_t* buf_len) {
+    size_t block_len = 20 * params->chars_len;
+    if (!buf) {
+        *buf_len = block_len + CMSDF_BMFONT_BLOCK_HEADER_LEN;
+        return 0;
+    }
+    uint8_t* block = cmsdf_gen_bmfont_write_block_header(buf, 4, block_len);
+
+    size_t tile_width, tile_height;
+    tile_size(params->chars_len, &tile_width, &tile_height);
+    for (size_t i = 0; i < params->chars_len; i++) {
+        // should the id be utf-8?
+        // https://github.com/vladimirgamalyan/fontbm/blob/master/src/ProgramOptions.cpp#L157
+        // suggests UTF-32, but it is not the original source
+        uint32_t* c = params->chars + i;
+        memcpy(block, c, sizeof(uint32_t));
+        size_t x = i % tile_width;
+        size_t y = tile_height - i / tile_width - 1;
+        uint16_t x_loc = x * params->dim.width;
+        memcpy(block + 4, &x_loc, sizeof(x_loc));
+        uint16_t y_loc = y * params->dim.height;
+        memcpy(block + 6, &y_loc, sizeof(y_loc));
+        uint16_t width = params->dim.width;
+        memcpy(block + 8, &width, sizeof(width));
+        uint16_t height = params->dim.height;
+        memcpy(block + 10, &height, sizeof(height));
+        int16_t offset = -1;
+        memcpy(block + 12, &offset, sizeof(offset));
+        memcpy(block + 14, &offset, sizeof(offset));
+        FT_Error err = FT_Load_Glyph(params->face, *c, FT_LOAD_NO_HINTING | FT_LOAD_NO_BITMAP);
+        if (err) {
+            return CMSDF_ERR_FACE_MISSING_GLYPH;
+        }
+        int16_t xadvance = params->face->glyph->advance.x / 64;
+        memcpy(block + 16, &xadvance, sizeof(xadvance));
+        memset(block + 18, 0, 1);
+        memset(block + 19, 15, 1);
+        block += 20;
+    }
+    *buf_len = block_len + CMSDF_BMFONT_BLOCK_HEADER_LEN;
+    return 0;
+}
+
+int cmsdf_gen_bmfont(const cmsdf_gen_atlas_params* params, const char* pagename, uint8_t* buf, size_t* buf_len) {
+    if (!params || !buf_len) {
+        return CMSDF_ERR_INVALID_ARGUMENT;
+    }
+    uint8_t header[4] = {66, 77, 70, 3};
+    size_t len = sizeof(header);
+    len += cmsdf_gen_bmfont_info_block(params, NULL);
+    len += cmsdf_gen_bmfont_common_block(params, NULL);
+    len += cmsdf_gen_bmfont_pages_block(pagename, NULL);
+    size_t chars_block_len;
+    int err = cmsdf_gen_bmfont_chars_block(params, NULL, &chars_block_len);
+    if (err) {
+        return err;
+    }
+    len += chars_block_len;
+    if (len > UINT32_MAX) {  // ensure all lengths are less than 4 bytes long
+        return CMSDF_ERR_OOM;
+    }
+    *buf_len = len;
+    if (!buf) {
+        return 0;
+    }
+    // file header
+    memcpy(buf, &header, sizeof(header));
+    buf += sizeof(header);
+    buf += cmsdf_gen_bmfont_info_block(params, buf);
+    buf += cmsdf_gen_bmfont_common_block(params, buf);
+    buf += cmsdf_gen_bmfont_pages_block(pagename, buf);
+    err = cmsdf_gen_bmfont_chars_block(params, buf, &chars_block_len);
     return err;
 }

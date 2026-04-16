@@ -13,11 +13,12 @@ Above is a 128x128 px rendering of LiberationMono-Regulars 'H' glyph from a 16x1
 cmsdf features a minimal CLI.
 Generate the multi-channel signed distance field (MSDF) using:
 ```sh
-cmsdf generate -f $FONT_PATH -c $CHARACTER -w $MSDF_WIDTH -h $MSDF_HEIGHT
+cmsdf generate -f $FONT_PATH -c $CHARACTER -w $MSDF_WIDTH -h $MSDF_HEIGHT -o $OUTPUT_BASENAME
 ```
-That will place the MSDF in `out.bmp`.
+That will place the MSDF in `$OUTPUT_BASENAME.bmp`, which is `out.bmp` by default.
 A string can passed to the `-c`, which will generate an atlas containing all glyphs of the string.
 For practical usage width and height should be at least 32 pixels.
+In addition a [binary bmfont file](https://angelcode.com/products/bmfont/doc/file_format.html) with font metadata is created in `$OUTPUT_BASENAME.fnt`, which is `out.fnt` by default.
 
 Rendering can be previewed with:
 ```sh
@@ -91,6 +92,17 @@ Passing `NULL` for `pixels` returns the minimum size required in bytes in `resul
 That buffer needs to be zeroed before passing it to `cmsdf_gen_atlas()`.
 The function returns `0` on success.
 
+Binary bmfont data for an atlas be generated with:
+```c
+int cmsdf_gen_bmfont(const cmsdf_gen_atlas_params* params, const char* pagename, uint8_t* buf, size_t* buf_len);
+```
+`params` is the same structure passed to `cmsdf_gen_atlas()`.
+`pagename` is the name of the respective image file containing the atlas.
+`buf` needs to be allocated by the caller and must be large enough to hold all data.
+
+Passing `NULL` for `buf` returns the minimum size required in bytes in `buf_len`.
+The function returns `0` on success.
+
 For an example please refer to the included CLI contained in `src/main.c`.
 
 ## Building
@@ -102,5 +114,5 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 On Windows the paths to freetype2 likely need to specified with `-DFREETYPE_LIBRARY -DFREETYPE_INCLUDE_DIRS` in addition.
 The following will build the cmsdf CLI in `build/cmsdf`:
 ```sh
-cmake --build build --target cmsdf
+cmake --build build --target cli
 ```
