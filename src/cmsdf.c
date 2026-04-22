@@ -51,6 +51,11 @@ static double vec2_dist(vec2 a, vec2 b) {
     return sqrt(diff.x * diff.x + diff.y * diff.y);
 }
 
+static double vec2_dist_sq(vec2 a, vec2 b) {
+    vec2 diff = vec2_sub(a, b);
+    return diff.x * diff.x + diff.y * diff.y;
+}
+
 static vec2 vec2_normalize(vec2 a) {
     double len = sqrt(a.x * a.x + a.y * a.y);
     return (vec2){.x = a.x / len, .y = a.y / len};
@@ -254,7 +259,7 @@ static double cmsdf_edge_arg_min_dist(cmsdf_edge* e, vec2 point) {
                     continue;
                 }
                 vec2 on_curve = cmsdf_edge_at(e, t);
-                double dist = vec2_dist(on_curve, point);
+                double dist = vec2_dist_sq(on_curve, point);
                 if (dist < min_dist) {
                     min_dist = dist;
                     min_arg = t;
@@ -264,8 +269,8 @@ static double cmsdf_edge_arg_min_dist(cmsdf_edge* e, vec2 point) {
         }
         case EDGE_TY_CUBIC: {
             double t = 0;
-            double min_dist = vec2_dist(e->start, point);
-            double end_dist = vec2_dist(e->end, point);
+            double min_dist = vec2_dist_sq(e->start, point);
+            double end_dist = vec2_dist_sq(e->end, point);
             if (end_dist < min_dist) {
                 min_dist = end_dist;
                 t = 1;
@@ -290,7 +295,7 @@ static double cmsdf_edge_arg_min_dist(cmsdf_edge* e, vec2 point) {
                 if (x1 < 0 || x1 > 1) {
                     continue;
                 }
-                double d = vec2_dist(cmsdf_edge_at(e, x1), point);
+                double d = vec2_dist_sq(cmsdf_edge_at(e, x1), point);
                 if (d < min_dist) {
                     min_dist = d;
                     t = x1;
@@ -902,7 +907,7 @@ static int cmsdf_gen_bmfont_chars_block(const cmsdf_gen_atlas_params* params, ui
         uint32_t* c = params->chars + i;
         memcpy(block, c, sizeof(uint32_t));
         size_t x = i % tile_width;
-        size_t y = tile_height - i / tile_width - 1;
+        size_t y = i / tile_width;  // in contrast to bmp (cmsdf_gen_atlas) bmf's y-axis points downward
         uint16_t x_loc = x * params->dim.width;
         memcpy(block + 4, &x_loc, sizeof(x_loc));
         uint16_t y_loc = y * params->dim.height;
